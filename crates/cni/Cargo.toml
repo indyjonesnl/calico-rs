@@ -1,0 +1,21 @@
+[package]
+name = "cni"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+apis = { version = "0.1.0", path = "../apis" }
+datastore = { version = "0.1.0", path = "../datastore" }
+futures.workspace = true
+hex = "0.4.3"
+ipam = { version = "0.1.0", path = "../ipam" }
+nix = { version = "0.31.3", features = ["sched", "mount"] }
+rtnetlink = "0.21.0"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha1 = "0.11.0"
+tokio = { workspace = true, features = ["rt", "macros"] }

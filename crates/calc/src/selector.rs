@@ -1,0 +1,437 @@
+//! Calico label selector language: parser + evaluator.
+//!
+//! Grammar (a faithful subset of upstream `libcalico-go/lib/selector`):
+//!
+//! ```text
+//!   expr    := or
+//!   or      := and ( "||" and )*
+//!   and     := unary ( "&&" unary )*
+//!   unary   := "!" unary | primary
+//!   primary := "(" expr ")"
+//!            | "all" "(" ")"
+//!            | "has" "(" label ")"
+//!            | label "==" string
+//!            | label "!=" string
+//!            | label "in"     "{" string ( "," string )* "}"
+//!            | label "not" "in" "{" string ( "," string )* "}"
+//! ```
+//!
+//! `label` is a bareword (letters, digits, `._-/`), `string` is single- or
+//! double-quoted. Semantics match Calico: `k != v` and `k not in {...}` are true
+//! when the label is absent.
+
+use std::collections::BTreeMap;
+
+/// A parsed label selector.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Selector {
+    /// `all()` — matches everything.
+    All,
+    /// `has(k)` — label `k` is present.
+    Has(String),
+    /// `k == "v"`.
+    Equal(String, String),
+    /// `k != "v"` (also true when `k` is absent).
+    NotEqual(String, String),
+    /// `k in {"a","b"}`.
+    In(String, Vec<String>),
+    /// `k not in {"a","b"}` (also true when `k` is absent).
+    NotIn(String, Vec<String>),
+    /// `!expr`.
+    Not(Box<Selector>),
+    /// `a && b`.
+    And(Box<Selector>, Box<Selector>),
+    /// `a || b`.
+    Or(Box<Selector>, Box<Selector>),
+}
+
+/// A selector parse error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectorError(pub String);
+
+impl std::fmt::Display for SelectorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "selector parse error: {}", self.0)
+    }
+}
+
+impl std::error::Error for SelectorError {}
+
+impl Selector {
+    /// Parse a selector string.
+    pub fn parse(input: &str) -> Result<Selector, SelectorError> {
+        let tokens = tokenize(input)?;
+        let mut p = Parser { tokens, pos: 0 };
+        let sel = p.parse_or()?;
+        if p.peek().is_some() {
+            return Err(SelectorError(format!("trailing input at token {}", p.pos)));
+        }
+        Ok(sel)
+    }
+
+    /// Evaluate the selector against a set of labels.
+    pub fn matches(&self, labels: &BTreeMap<String, String>) -> bool {
+        match self {
+            Selector::All => true,
+            Selector::Has(k) => labels.contains_key(k),
+            Selector::Equal(k, v) => labels.get(k).map(|x| x == v).unwrap_or(false),
+            Selector::NotEqual(k, v) => labels.get(k).map(|x| x != v).unwrap_or(true),
+            Selector::In(k, set) => labels.get(k).map(|x| set.contains(x)).unwrap_or(false),
+            Selector::NotIn(k, set) => labels.get(k).map(|x| !set.contains(x)).unwrap_or(true),
+            Selector::Not(e) => !e.matches(labels),
+            Selector::And(a, b) => a.matches(labels) && b.matches(labels),
+            Selector::Or(a, b) => a.matches(labels) || b.matches(labels),
+        }
+    }
+}
+
+// ---- Tokenizer -----------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Token {
+    LParen,
+    RParen,
+    LBrace,
+    RBrace,
+    Comma,
+    EqEq,
+    NotEq,
+    AndAnd,
+    OrOr,
+    Bang,
+    Ident(String),
+    Str(String),
+}
+
+fn is_ident_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/')
+}
+
+fn tokenize(input: &str) -> Result<Vec<Token>, SelectorError> {
+    let chars: Vec<char> = input.chars().collect();
+    let mut i = 0;
+    let mut out = Vec::new();
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            c if c.is_whitespace() => i += 1,
+            '(' => {
+                out.push(Token::LParen);
+                i += 1;
+            }
+            ')' => {
+                out.push(Token::RParen);
+                i += 1;
+            }
+            '{' => {
+                out.push(Token::LBrace);
+                i += 1;
+            }
+            '}' => {
+                out.push(Token::RBrace);
+                i += 1;
+            }
+            ',' => {
+                out.push(Token::Comma);
+                i += 1;
+            }
+            '=' => {
+                if chars.get(i + 1) == Some(&'=') {
+                    out.push(Token::EqEq);
+                    i += 2;
+                } else {
+                    return Err(SelectorError("expected '==' after '='".into()));
+                }
+            }
+            '!' => {
+                if chars.get(i + 1) == Some(&'=') {
+                    out.push(Token::NotEq);
+                    i += 2;
+                } else {
+                    out.push(Token::Bang);
+                    i += 1;
+                }
+            }
+            '&' => {
+                if chars.get(i + 1) == Some(&'&') {
+                    out.push(Token::AndAnd);
+                    i += 2;
+                } else {
+                    return Err(SelectorError("expected '&&'".into()));
+                }
+            }
+            '|' => {
+                if chars.get(i + 1) == Some(&'|') {
+                    out.push(Token::OrOr);
+                    i += 2;
+                } else {
+                    return Err(SelectorError("expected '||'".into()));
+                }
+            }
+            '\'' | '"' => {
+                let quote = c;
+                i += 1;
+                let start = i;
+                while i < chars.len() && chars[i] != quote {
+                    i += 1;
+                }
+                if i >= chars.len() {
+                    return Err(SelectorError("unterminated string literal".into()));
+                }
+                out.push(Token::Str(chars[start..i].iter().collect()));
+                i += 1; // consume closing quote
+            }
+            c if is_ident_char(c) => {
+                let start = i;
+                while i < chars.len() && is_ident_char(chars[i]) {
+                    i += 1;
+                }
+                out.push(Token::Ident(chars[start..i].iter().collect()));
+            }
+            other => return Err(SelectorError(format!("unexpected character '{other}'"))),
+        }
+    }
+    Ok(out)
+}
+
+// ---- Parser --------------------------------------------------------------
+
+struct Parser {
+    tokens: Vec<Token>,
+    pos: usize,
+}
+
+impl Parser {
+    fn peek(&self) -> Option<&Token> {
+        self.tokens.get(self.pos)
+    }
+
+    fn next(&mut self) -> Option<Token> {
+        let t = self.tokens.get(self.pos).cloned();
+        if t.is_some() {
+            self.pos += 1;
+        }
+        t
+    }
+
+    fn expect(&mut self, want: &Token) -> Result<(), SelectorError> {
+        match self.next() {
+            Some(ref t) if t == want => Ok(()),
+            other => Err(SelectorError(format!("expected {want:?}, got {other:?}"))),
+        }
+    }
+
+    fn parse_or(&mut self) -> Result<Selector, SelectorError> {
+        let mut left = self.parse_and()?;
+        while matches!(self.peek(), Some(Token::OrOr)) {
+            self.next();
+            let right = self.parse_and()?;
+            left = Selector::Or(Box::new(left), Box::new(right));
+        }
+        Ok(left)
+    }
+
+    fn parse_and(&mut self) -> Result<Selector, SelectorError> {
+        let mut left = self.parse_unary()?;
+        while matches!(self.peek(), Some(Token::AndAnd)) {
+            self.next();
+            let right = self.parse_unary()?;
+            left = Selector::And(Box::new(left), Box::new(right));
+        }
+        Ok(left)
+    }
+
+    fn parse_unary(&mut self) -> Result<Selector, SelectorError> {
+        if matches!(self.peek(), Some(Token::Bang)) {
+            self.next();
+            return Ok(Selector::Not(Box::new(self.parse_unary()?)));
+        }
+        self.parse_primary()
+    }
+
+    fn parse_primary(&mut self) -> Result<Selector, SelectorError> {
+        match self.next() {
+            Some(Token::LParen) => {
+                let inner = self.parse_or()?;
+                self.expect(&Token::RParen)?;
+                Ok(inner)
+            }
+            Some(Token::Ident(word)) => self.parse_ident_expr(word),
+            other => Err(SelectorError(format!("unexpected token {other:?}"))),
+        }
+    }
+
+    /// A bareword begins one of: `all()`, `has(k)`, `k == v`, `k != v`,
+    /// `k in {..}`, `k not in {..}`.
+    fn parse_ident_expr(&mut self, word: String) -> Result<Selector, SelectorError> {
+        match word.as_str() {
+            "all" => {
+                self.expect(&Token::LParen)?;
+                self.expect(&Token::RParen)?;
+                Ok(Selector::All)
+            }
+            "has" => {
+                self.expect(&Token::LParen)?;
+                let key = self.expect_ident()?;
+                self.expect(&Token::RParen)?;
+                Ok(Selector::Has(key))
+            }
+            // Otherwise `word` is a label key; the next token decides the op.
+            _ => match self.next() {
+                Some(Token::EqEq) => Ok(Selector::Equal(word, self.expect_str()?)),
+                Some(Token::NotEq) => Ok(Selector::NotEqual(word, self.expect_str()?)),
+                Some(Token::Ident(kw)) if kw == "in" => Ok(Selector::In(word, self.parse_set()?)),
+                Some(Token::Ident(kw)) if kw == "not" => match self.next() {
+                    Some(Token::Ident(kw2)) if kw2 == "in" => {
+                        Ok(Selector::NotIn(word, self.parse_set()?))
+                    }
+                    other => Err(SelectorError(format!(
+                        "expected 'in' after 'not', got {other:?}"
+                    ))),
+                },
+                other => Err(SelectorError(format!(
+                    "expected operator after label '{word}', got {other:?}"
+                ))),
+            },
+        }
+    }
+
+    fn parse_set(&mut self) -> Result<Vec<String>, SelectorError> {
+        self.expect(&Token::LBrace)?;
+        let mut items = Vec::new();
+        // Allow an empty set `{}`.
+        if matches!(self.peek(), Some(Token::RBrace)) {
+            self.next();
+            return Ok(items);
+        }
+        loop {
+            items.push(self.expect_str()?);
+            match self.next() {
+                Some(Token::Comma) => continue,
+                Some(Token::RBrace) => break,
+                other => {
+                    return Err(SelectorError(format!(
+                        "expected ',' or '}}' in set, got {other:?}"
+                    )))
+                }
+            }
+        }
+        Ok(items)
+    }
+
+    fn expect_ident(&mut self) -> Result<String, SelectorError> {
+        match self.next() {
+            Some(Token::Ident(s)) => Ok(s),
+            other => Err(SelectorError(format!("expected identifier, got {other:?}"))),
+        }
+    }
+
+    fn expect_str(&mut self) -> Result<String, SelectorError> {
+        match self.next() {
+            Some(Token::Str(s)) => Ok(s),
+            other => Err(SelectorError(format!(
+                "expected string literal, got {other:?}"
+            ))),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn labels(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn all_matches_everything() {
+        let s = Selector::parse("all()").unwrap();
+        assert!(s.matches(&labels(&[])));
+        assert!(s.matches(&labels(&[("a", "b")])));
+    }
+
+    #[test]
+    fn equality_and_absence() {
+        let s = Selector::parse("role == 'frontend'").unwrap();
+        assert!(s.matches(&labels(&[("role", "frontend")])));
+        assert!(!s.matches(&labels(&[("role", "backend")])));
+        assert!(!s.matches(&labels(&[]))); // absent != match
+    }
+
+    #[test]
+    fn not_equal_is_true_when_absent() {
+        let s = Selector::parse("role != 'db'").unwrap();
+        assert!(s.matches(&labels(&[("role", "web")])));
+        assert!(s.matches(&labels(&[]))); // absent label matches !=
+        assert!(!s.matches(&labels(&[("role", "db")])));
+    }
+
+    #[test]
+    fn has_checks_presence() {
+        let s = Selector::parse("has(tier)").unwrap();
+        assert!(s.matches(&labels(&[("tier", "anything")])));
+        assert!(!s.matches(&labels(&[("other", "x")])));
+    }
+
+    #[test]
+    fn in_and_not_in_sets() {
+        let s = Selector::parse("env in {'prod', 'staging'}").unwrap();
+        assert!(s.matches(&labels(&[("env", "prod")])));
+        assert!(!s.matches(&labels(&[("env", "dev")])));
+        assert!(!s.matches(&labels(&[])));
+
+        let n = Selector::parse("env not in {'prod'}").unwrap();
+        assert!(n.matches(&labels(&[("env", "dev")])));
+        assert!(n.matches(&labels(&[]))); // absent matches "not in"
+        assert!(!n.matches(&labels(&[("env", "prod")])));
+    }
+
+    #[test]
+    fn boolean_precedence_and_over_or() {
+        // a || b && c  ==  a || (b && c)
+        let s = Selector::parse("a == '1' || b == '1' && c == '1'").unwrap();
+        // b=1,c=0 => (b&&c) false, a=0 => overall false
+        assert!(!s.matches(&labels(&[("b", "1")])));
+        // a=1 alone => true
+        assert!(s.matches(&labels(&[("a", "1")])));
+        // b=1,c=1 => true
+        assert!(s.matches(&labels(&[("b", "1"), ("c", "1")])));
+    }
+
+    #[test]
+    fn negation_and_parens() {
+        let s = Selector::parse("!(role == 'db')").unwrap();
+        assert!(s.matches(&labels(&[("role", "web")])));
+        assert!(!s.matches(&labels(&[("role", "db")])));
+
+        let s2 = Selector::parse("(a == '1' || b == '1') && c == '1'").unwrap();
+        assert!(s2.matches(&labels(&[("a", "1"), ("c", "1")])));
+        assert!(!s2.matches(&labels(&[("a", "1")]))); // missing c
+    }
+
+    #[test]
+    fn kubernetes_style_label_keys() {
+        let s = Selector::parse("projectcalico.org/namespace == 'kube-system'").unwrap();
+        assert!(s.matches(&labels(&[("projectcalico.org/namespace", "kube-system")])));
+    }
+
+    #[test]
+    fn double_quotes_accepted() {
+        let s = Selector::parse("k == \"v\"").unwrap();
+        assert!(s.matches(&labels(&[("k", "v")])));
+    }
+
+    #[test]
+    fn parse_errors() {
+        assert!(Selector::parse("role ==").is_err()); // missing value
+        assert!(Selector::parse("role = 'x'").is_err()); // single '='
+        assert!(Selector::parse("has(").is_err()); // unterminated
+        assert!(Selector::parse("'unterminated").is_err());
+        assert!(Selector::parse("a == 'b' garbage").is_err()); // trailing
+        assert!(Selector::parse("env not of {'x'}").is_err()); // 'not' without 'in'
+    }
+}

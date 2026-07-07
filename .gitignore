@@ -1,0 +1,33 @@
+
+# Local reference copy of upstream Calico (behavioral reference only)
+upstream/
+
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# eBPF build artifacts
+*.o
+*.ll
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Env
+.env
+.env.*
+
+# Local dev cluster (kubeconfig, etc.)
+.cluster/
+
+# Conformance run artifacts
+e2e.log
+junit_*.xml
+
+# Spec Kit working files (kept local, never pushed)
+.specify/
+specs/

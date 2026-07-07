@@ -1,0 +1,15 @@
+[package]
+name = "calc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+apis = { version = "0.1.0", path = "../apis" }
+serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+serde_json.workspace = true

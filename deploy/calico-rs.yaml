@@ -1,0 +1,131 @@
+# calico-rs node DaemonSet + RBAC.
+#
+# Runs one privileged, host-networked pod per node (the calico-node analog). It
+# installs the CNI plugin onto the host and runs the felix reconcile loop.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: calico-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: calico-rs-node
+  namespace: calico-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: calico-rs-node
+rules:
+  # Core objects felix/CNI read.
+  - apiGroups: [""]
+    resources: ["pods", "namespaces", "endpoints", "services"]
+    verbs: ["get", "list", "watch"]
+  # Nodes: read + patch (VXLAN VTEP annotations are published on the Node).
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["nodes/status"]
+    verbs: ["patch", "update"]
+  # Calico CRD-backed resources (datastore + IPAM).
+  - apiGroups: ["crd.projectcalico.org"]
+    resources:
+      - ippools
+      - ipamblocks
+      - blockaffinities
+      - ipamhandles
+      - ipamconfigurations
+      - clusterinformations
+      - felixconfigurations
+      - bgpconfigurations
+      - bgppeers
+      - networkpolicies
+      - globalnetworkpolicies
+      - networksets
+      - globalnetworksets
+      - hostendpoints
+      - workloadendpoints
+      - profiles
+      - tiers
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Native Kubernetes NetworkPolicy (translated by calc).
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: calico-rs-node
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: calico-rs-node
+subjects:
+  - kind: ServiceAccount
+    name: calico-rs-node
+    namespace: calico-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: calico-rs-node
+  namespace: calico-system
+  labels:
+    k8s-app: calico-rs-node
+spec:
+  selector:
+    matchLabels:
+      k8s-app: calico-rs-node
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        k8s-app: calico-rs-node
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      serviceAccountName: calico-rs-node
+      # Run on every node, including the control-plane and NotReady nodes.
+      tolerations:
+        - operator: Exists
+      terminationGracePeriodSeconds: 5
+      priorityClassName: system-node-critical
+      containers:
+        - name: calico-rs-node
+          image: calico-rs:dev
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          env:
+            - name: NODENAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: CNI_BIN_DIR
+              value: /host/opt/cni/bin
+            - name: CNI_NET_DIR
+              value: /host/etc/cni/net.d
+          volumeMounts:
+            - name: cni-bin-dir
+              mountPath: /host/opt/cni/bin
+            - name: cni-net-dir
+              mountPath: /host/etc/cni/net.d
+            - name: var-lib-calico
+              mountPath: /var/lib/calico
+      volumes:
+        - name: cni-bin-dir
+          hostPath:
+            path: /opt/cni/bin
+            type: DirectoryOrCreate
+        - name: cni-net-dir
+          hostPath:
+            path: /etc/cni/net.d
+            type: DirectoryOrCreate
+        - name: var-lib-calico
+          hostPath:
+            path: /var/lib/calico
+            type: DirectoryOrCreate

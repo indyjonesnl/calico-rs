@@ -1,0 +1,39 @@
+# calico-rs cluster controllers (namespace->Profile + IPAM garbage collection).
+# Single replica; reuses the calico-rs-node ServiceAccount/ClusterRole, which
+# already grants pods/nodes/namespaces/profiles + IPAM CRD access.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: calico-rs-controllers
+  namespace: calico-system
+  labels:
+    k8s-app: calico-rs-controllers
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      k8s-app: calico-rs-controllers
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        k8s-app: calico-rs-controllers
+    spec:
+      # hostNetwork until the cross-node pod overlay exists: a regular pod IP
+      # (192.168.x) is not yet routable back from the API server's node, so the
+      # controller reaches the API server via the node's own network.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      serviceAccountName: calico-rs-node
+      priorityClassName: system-cluster-critical
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: calico-rs-controllers
+          image: calico-rs:dev
+          imagePullPolicy: IfNotPresent
+          command: ["/opt/calico-rs/bin/calico-rs-controllers"]
+          env:
+            - name: RUST_LOG
+              value: info

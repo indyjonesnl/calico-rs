@@ -1,0 +1,18 @@
+# kind cluster for calico-rs: 1 control-plane + 3 workers, no default CNI.
+# Mirrors upstream Calico's e2e topology (hack/test/kind/kind.config).
+# calico-rs is installed as the CNI after the cluster comes up, so nodes start
+# NotReady until the calico-rs DaemonSet drops a CNI conf + binary on each node.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  # No CNI installed by kind — calico-rs provides it.
+  disableDefaultCNI: true
+  # Pod CIDR advertised to kube-controller-manager. Calico-rs runs its own IPAM,
+  # but this keeps node.Spec.PodCIDR consistent with the default IPPool.
+  podSubnet: "192.168.0.0/16"
+  serviceSubnet: "10.96.0.0/16"
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker
+  - role: worker

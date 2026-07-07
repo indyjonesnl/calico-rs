@@ -1,0 +1,46 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/reconcile",
+    "crates/apis",
+    "crates/datastore",
+    "crates/ipam",
+    "crates/proto",
+    "crates/calc",
+    "crates/felix",
+    "crates/felix-ebpf",
+    "crates/cni",
+    "crates/typha",
+    "crates/node",
+    "crates/controllers",
+    "crates/bgp",
+    "crates/calicoctl",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/indyjonesnl/calico-rs"
+rust-version = "1.90"
+
+# Shared dependency versions. Individual crates opt in with `workspace = true`.
+# Versions are floors; re-check crates.io at implementation time (see research.md).
+[workspace.dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+futures = "0.3"
+
+[workspace.lints.clippy]
+# Keep the bar high but pragmatic for a large systems codebase.
+all = { level = "warn", priority = -1 }
+uninlined_format_args = "allow"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"

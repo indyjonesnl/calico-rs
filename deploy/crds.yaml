@@ -1,0 +1,1270 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: ippools.crd.projectcalico.org
+spec:
+  group: crd.projectcalico.org
+  names:
+    categories: []
+    kind: IPPool
+    plural: ippools
+    shortNames: []
+    singular: ippool
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for IpPoolSpec via `CustomResource`
+        properties:
+          spec:
+            description: |-
+              Spec for the `IPPool` resource — an allocatable address range. Deriving
+              [`CustomResource`] generates the cluster-scoped `IPPool` root type (with
+              metadata/status) and `IPPool::crd()` for CRD manifest generation.
+            properties:
+              allowedUses:
+                items:
+                  description: 'What an IP pool may be used for. Wire values: `Workload` / `Tunnel` / `LoadBalancer`.'
+                  enum:
+                  - Workload
+                  - Tunnel
+                  - LoadBalancer
+                  type: string
+                type: array
+              assignmentMode:
+                default: Automatic
+                description: Whether addresses are auto-assigned or only assigned manually.
+                enum:
+                - Automatic
+                - Manual
+                type: string
+              blockSize:
+                format: uint8
+                maximum: 255.0
+                minimum: 0.0
+                nullable: true
+                type: integer
+              cidr:
+                type: string
+              disableBGPExport:
+                default: false
+                type: boolean
+              disabled:
+                default: false
+                type: boolean
+              ipipMode:
+                default: Never
+                description: |-
+                  Encapsulation mode shared by `ipipMode` and `vxlanMode`. Wire values match
+                  upstream: `Never` / `Always` / `CrossSubnet`.
+                enum:
+                - Never
+                - Always
+                - CrossSubnet
+                type: string
+              namespaceSelector:
+                nullable: true
+                type: string
+              natOutgoing:
+                default: false
+                type: boolean
+              nodeSelector:
+                nullable: true
+                type: string
+              vxlanMode:
+                default: Never
+                description: |-
+                  Encapsulation mode shared by `ipipMode` and `vxlanMode`. Wire values match
+                  upstream: `Never` / `Always` / `CrossSubnet`.
+                enum:
+                - Never
+                - Always
+                - CrossSubnet
+                type: string
+            required:
+            - cidr
+            type: object
+        required:
+        - spec
+        title: IPPool
+        type: object
+    served: true
+    storage: true
+    subresources: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: networkpolicies.crd.projectcalico.org
+spec:
+  group: crd.projectcalico.org
+  names:
+    categories: []
+    kind: NetworkPolicy
+    plural: networkpolicies
+    shortNames: []
+    singular: networkpolicy
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for NetworkPolicySpec via `CustomResource`
+        properties:
+          spec:
+            description: Spec for the namespaced `NetworkPolicy` resource.
+            properties:
+              egress:
+                items:
+                  description: A single policy rule.
+                  properties:
+                    action:
+                      description: 'Rule action. Wire values match upstream: `Allow` / `Deny` / `Log` / `Pass`.'
+                      enum:
+                      - Allow
+                      - Deny
+                      - Log
+                      - Pass
+                      type: string
+                    destination:
+                      description: One side (source or destination) of a rule.
+                      properties:
+                        namespaceSelector:
+                          nullable: true
+                          type: string
+                        nets:
+                          items:
+                            type: string
+                          type: array
+                        notNets:
+                          items:
+                            type: string
+                          type: array
+                        ports:
+                          items:
+                            format: uint16
+                            maximum: 65535.0
+                            minimum: 0.0
+                            type: integer
+                          type: array
+                        selector:
+                          nullable: true
+                          type: string
+                        serviceAccounts:
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                    protocol:
+                      nullable: true
+                      x-kubernetes-int-or-string: true
+                    source:
+                      description: One side (source or destination) of a rule.
+                      properties:
+                        namespaceSelector:
+                          nullable: true
+                          type: string
+                        nets:
+                          items:
+                            type: string
+                          type: array
+                        notNets:
+                          items:
+                            type: string
+                          type: array
+                        ports:
+                          items:
+                            format: uint16
+                            maximum: 65535.0
+                            minimum: 0.0
+                            type: integer
+                          type: array
+                        selector:
+                          nullable: true
+                          type: string
+                        serviceAccounts:
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                  required:
+                  - action
+                  type: object
+                type: array
+              ingress:
+                items:
+                  description: A single policy rule.
+                  properties:
+                    action:
+                      description: 'Rule action. Wire values match upstream: `Allow` / `Deny` / `Log` / `Pass`.'
+                      enum:
+                      - Allow
+                      - Deny
+                      - Log
+                      - Pass
+                      type: string
+                    destination:
+                      description: One side (source or destination) of a rule.
+                      properties:
+                        namespaceSelector:
+                          nullable: true
+                          type: string
+                        nets:
+                          items:
+                            type: string
+                          type: array
+                        notNets:
+                          items:
+                            type: string
+                          type: array
+                        ports:
+                          items:
+                            format: uint16
+                            maximum: 65535.0
+                            minimum: 0.0
+                            type: integer
+                          type: array
+                        selector:
+                          nullable: true
+                          type: string
+                        serviceAccounts:
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                    protocol:
+                      nullable: true
+                      x-kubernetes-int-or-string: true
+                    source:
+                      description: One side (source or destination) of a rule.
+                      properties:
+                        namespaceSelector:
+                          nullable: true
+                          type: string
+                        nets:
+                          items:
+                            type: string
+                          type: array
+                        notNets:
+                          items:
+                            type: string
+                          type: array
+                        ports:
+                          items:
+                            format: uint16
+                            maximum: 65535.0
+                            minimum: 0.0
+                            type: integer
+                          type: array
+                        selector:
+                          nullable: true
+                          type: string
+                        serviceAccounts:
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                  required:
+                  - action
+                  type: object
+                type: array
+              order:
+                format: double
+                nullable: true
+                type: number
+              selector:
+                type: string
+              tier:
+                nullable: true
+                type: string
+              types:
+                items:
+                  description: Which directions a policy governs.
+                  enum:
+                  - Ingress
+                  - Egress
+                  type: string
+                type: array
+            type: object
+        required:
+        - spec
+        title: NetworkPolicy
+        type: object
+    served: true
+    storage: true
+    subresources: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: globalnetworkpolicies.crd.projectcalico.org
+spec:
+  group: crd.projectcalico.org
+  names:
+    categories: []
+    kind: GlobalNetworkPolicy
+    plural: globalnetworkpolicies
+    shortNames: []
+    singular: globalnetworkpolicy
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for GlobalNetworkPolicySpec via `CustomResource`
+        properties:
+          spec:
+            description: Spec for the cluster-scoped `GlobalNetworkPolicy` resource.
+            properties:
+              applyOnForward:
+                default: false
+                type: boolean
+              doNotTrack:
+                default: false
+                type: boolean
+              egress:
+                items:
+                  description: A single policy rule.
+                  properties:
+                    action:
+                      description: 'Rule action. Wire values match upstream: `Allow` / `Deny` / `Log` / `Pass`.'
+                      enum:
+                      - Allow
+                      - Deny
+                      - Log
+                      - Pass
+                      type: string
+                    destination:
+                      description: One side (source or destination) of a rule.
+                      properties:
+                        namespaceSelector:
+                          nullable: true
+                          type: string
+                        nets:
+                          items:
+                            type: string
+                          type: array
+                        notNets:
+                          items:
+                            type: string
+                          type: array
+                        ports:
+                          items:
+                            format: uint16
+                            maximum: 65535.0
+                            minimum: 0.0
+                            type: integer
+                          type: array
+                        selector:
+                          nullable: true
+                          type: string
+                        serviceAccounts:
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                    protocol:
+                      nullable: true
+                      x-kubernetes-int-or-string: true
+                    source:
+                      description: One side (source or destination) of a rule.
+                      properties:
+                        namespaceSelector:
+                          nullable: true
+                          type: string
+                        nets:
+                          items:
+                            type: string
+                          type: array
+                        notNets:
+                          items:
+                            type: string
+                          type: array
+                        ports:
+                          items:
+                            format: uint16
+                            maximum: 65535.0
+                            minimum: 0.0
+                            type: integer
+                          type: array
+                        selector:
+                          nullable: true
+                          type: string
+                        serviceAccounts:
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                  required:
+                  - action
+                  type: object
+                type: array
+              ingress:
+                items:
+                  description: A single policy rule.
+                  properties:
+                    action:
+                      description: 'Rule action. Wire values match upstream: `Allow` / `Deny` / `Log` / `Pass`.'
+                      enum:
+                      - Allow
+                      - Deny
+                      - Log
+                      - Pass
+                      type: string
+                    destination:
+                      description: One side (source or destination) of a rule.
+                      properties:
+                        namespaceSelector:
+                          nullable: true
+                          type: string
+                        nets:
+                          items:
+                            type: string
+                          type: array
+                        notNets:
+                          items:
+                            type: string
+                          type: array
+                        ports:
+                          items:
+                            format: uint16
+                            maximum: 65535.0
+                            minimum: 0.0
+                            type: integer
+                          type: array
+                        selector:
+                          nullable: true
+                          type: string
+                        serviceAccounts:
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                    protocol:
+                      nullable: true
+                      x-kubernetes-int-or-string: true
+                    source:
+                      description: One side (source or destination) of a rule.
+                      properties:
+                        namespaceSelector:
+                          nullable: true
+                          type: string
+                        nets:
+                          items:
+                            type: string
+                          type: array
+                        notNets:
+                          items:
+                            type: string
+                          type: array
+                        ports:
+                          items:
+                            format: uint16
+                            maximum: 65535.0
+                            minimum: 0.0
+                            type: integer
+                          type: array
+                        selector:
+                          nullable: true
+                          type: string
+                        serviceAccounts:
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                  required:
+                  - action
+                  type: object
+                type: array
+              namespaceSelector:
+                type: string
+              order:
+                format: double
+                nullable: true
+                type: number
+              preDNAT:
+                default: false
+                type: boolean
+              selector:
+                type: string
+              tier:
+                nullable: true
+                type: string
+              types:
+                items:
+                  description: Which directions a policy governs.
+                  enum:
+                  - Ingress
+                  - Egress
+                  type: string
+                type: array
+            type: object
+        required:
+        - spec
+        title: GlobalNetworkPolicy
+        type: object
+    served: true
+    storage: true
+    subresources: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: tiers.crd.projectcalico.org
+spec:
+  group: crd.projectcalico.org
+  names:
+    categories: []
+    kind: Tier
+    plural: tiers
+    shortNames: []
+    singular: tier
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for TierSpec via `CustomResource`
+        properties:
+          spec:
+            description: Spec for the `Tier` resource — an ordered grouping of policies.
+            properties:
+              order:
+                format: double
+                nullable: true
+                type: number
+            type: object
+        required:
+        - spec
+        title: Tier
+        type: object
+    served: true
+    storage: true
+    subresources: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: profiles.crd.projectcalico.org
+spec:
+  group: crd.projectcalico.org
+  names:
+    categories: []
+    kind: Profile
+    plural: profiles
+    shortNames: []
+    singular: profile
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for ProfileSpec via `CustomResource`
+        properties:
+          spec:
+            description: Spec for the `Profile` resource — default rules + labels applied to endpoints.
+            properties:
+              egress:
+                items:
+                  description: A single policy rule.
+                  properties:
+                    action:
+                      description: 'Rule action. Wire values match upstream: `Allow` / `Deny` / `Log` / `Pass`.'
+                      enum:
+                      - Allow
+                      - Deny
+                      - Log
+                      - Pass
+                      type: string
+                    destination:
+                      description: One side (source or destination) of a rule.
+                      properties:
+                        namespaceSelector:
+                          nullable: true
+                          type: string
+                        nets:
+                          items:
+                            type: string
+                          type: array
+                        notNets:
+                          items:
+                            type: string
+                          type: array
+                        ports:
+                          items:
+                            format: uint16
+                            maximum: 65535.0
+                            minimum: 0.0
+                            type: integer
+                          type: array
+                        selector:
+                          nullable: true
+                          type: string
+                        serviceAccounts:
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                    protocol:
+                      nullable: true
+                      x-kubernetes-int-or-string: true
+                    source:
+                      description: One side (source or destination) of a rule.
+                      properties:
+                        namespaceSelector:
+                          nullable: true
+                          type: string
+                        nets:
+                          items:
+                            type: string
+                          type: array
+                        notNets:
+                          items:
+                            type: string
+                          type: array
+                        ports:
+                          items:
+                            format: uint16
+                            maximum: 65535.0
+                            minimum: 0.0
+                            type: integer
+                          type: array
+                        selector:
+                          nullable: true
+                          type: string
+                        serviceAccounts:
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                  required:
+                  - action
+                  type: object
+                type: array
+              ingress:
+                items:
+                  description: A single policy rule.
+                  properties:
+                    action:
+                      description: 'Rule action. Wire values match upstream: `Allow` / `Deny` / `Log` / `Pass`.'
+                      enum:
+                      - Allow
+                      - Deny
+                      - Log
+                      - Pass
+                      type: string
+                    destination:
+                      description: One side (source or destination) of a rule.
+                      properties:
+                        namespaceSelector:
+                          nullable: true
+                          type: string
+                        nets:
+                          items:
+                            type: string
+                          type: array
+                        notNets:
+                          items:
+                            type: string
+                          type: array
+                        ports:
+                          items:
+                            format: uint16
+                            maximum: 65535.0
+                            minimum: 0.0
+                            type: integer
+                          type: array
+                        selector:
+                          nullable: true
+                          type: string
+                        serviceAccounts:
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                    protocol:
+                      nullable: true
+                      x-kubernetes-int-or-string: true
+                    source:
+                      description: One side (source or destination) of a rule.
+                      properties:
+                        namespaceSelector:
+                          nullable: true
+                          type: string
+                        nets:
+                          items:
+                            type: string
+                          type: array
+                        notNets:
+                          items:
+                            type: string
+                          type: array
+                        ports:
+                          items:
+                            format: uint16
+                            maximum: 65535.0
+                            minimum: 0.0
+                            type: integer
+                          type: array
+                        selector:
+                          nullable: true
+                          type: string
+                        serviceAccounts:
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                  required:
+                  - action
+                  type: object
+                type: array
+              labelsToApply:
+                additionalProperties:
+                  type: string
+                type: object
+            type: object
+        required:
+        - spec
+        title: Profile
+        type: object
+    served: true
+    storage: true
+    subresources: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: clusterinformations.crd.projectcalico.org
+spec:
+  group: crd.projectcalico.org
+  names:
+    categories: []
+    kind: ClusterInformation
+    plural: clusterinformations
+    shortNames: []
+    singular: clusterinformation
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for ClusterInformationSpec via `CustomResource`
+        properties:
+          spec:
+            description: |-
+              Spec for the singleton `ClusterInformation` resource. `datastoreReady` is the
+              readiness gate the CNI plugin checks before wiring any pod.
+            properties:
+              calicoVersion:
+                type: string
+              clusterGUID:
+                type: string
+              clusterType:
+                type: string
+              datastoreReady:
+                nullable: true
+                type: boolean
+              variant:
+                type: string
+            type: object
+        required:
+        - spec
+        title: ClusterInformation
+        type: object
+    served: true
+    storage: true
+    subresources: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: ipamblocks.crd.projectcalico.org
+spec:
+  group: crd.projectcalico.org
+  names:
+    categories: []
+    kind: IPAMBlock
+    plural: ipamblocks
+    shortNames: []
+    singular: ipamblock
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for IpamBlockSpec via `CustomResource`
+        properties:
+          spec:
+            description: Spec for the `IPAMBlock` resource — a contiguous pool slice (the CAS unit).
+            properties:
+              affinity:
+                description: '`"host:<name>"` / `"virtual:<name>"`; absent when unaffine.'
+                nullable: true
+                type: string
+              allocations:
+                description: '`allocations[ordinal]` = index into `attributes`, or null if free.'
+                items:
+                  format: int64
+                  nullable: true
+                  type: integer
+                type: array
+              attributes:
+                items:
+                  description: Ownership metadata for one allocation within a block.
+                  properties:
+                    handleId:
+                      nullable: true
+                      type: string
+                    secondary:
+                      additionalProperties:
+                        type: string
+                      type: object
+                  type: object
+                type: array
+              cidr:
+                type: string
+              deleted:
+                default: false
+                type: boolean
+              sequenceNumber:
+                default: 0
+                format: uint64
+                minimum: 0.0
+                type: integer
+              sequenceNumberForAllocation:
+                additionalProperties:
+                  format: uint64
+                  minimum: 0.0
+                  type: integer
+                description: |-
+                  Per-ordinal (as string) block sequence number recorded at allocation
+                  time — the persisted half of the ABA release guard.
+                type: object
+              unallocated:
+                description: FIFO free-list of ordinals.
+                items:
+                  format: int64
+                  type: integer
+                type: array
+            required:
+            - allocations
+            - cidr
+            - unallocated
+            type: object
+        required:
+        - spec
+        title: IPAMBlock
+        type: object
+    served: true
+    storage: true
+    subresources: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: blockaffinities.crd.projectcalico.org
+spec:
+  group: crd.projectcalico.org
+  names:
+    categories: []
+    kind: BlockAffinity
+    plural: blockaffinities
+    shortNames: []
+    singular: blockaffinity
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for BlockAffinitySpec via `CustomResource`
+        properties:
+          spec:
+            description: Spec for the `BlockAffinity` resource — a per-host claim on a block.
+            properties:
+              cidr:
+                type: string
+              deleted:
+                default: false
+                type: boolean
+              node:
+                type: string
+              state:
+                description: '`pending` / `confirmed` / `pendingDeletion`.'
+                type: string
+            required:
+            - cidr
+            - node
+            - state
+            type: object
+        required:
+        - spec
+        title: BlockAffinity
+        type: object
+    served: true
+    storage: true
+    subresources: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: ipamhandles.crd.projectcalico.org
+spec:
+  group: crd.projectcalico.org
+  names:
+    categories: []
+    kind: IPAMHandle
+    plural: ipamhandles
+    shortNames: []
+    singular: ipamhandle
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for IpamHandleSpec via `CustomResource`
+        properties:
+          spec:
+            description: Spec for the `IPAMHandle` resource — the by-handle allocation index.
+            properties:
+              block:
+                additionalProperties:
+                  format: int64
+                  type: integer
+                description: block CIDR -> count allocated under this handle.
+                type: object
+              deleted:
+                default: false
+                type: boolean
+              handleId:
+                type: string
+            required:
+            - handleId
+            type: object
+        required:
+        - spec
+        title: IPAMHandle
+        type: object
+    served: true
+    storage: true
+    subresources: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: ipamconfigurations.crd.projectcalico.org
+spec:
+  group: crd.projectcalico.org
+  names:
+    categories: []
+    kind: IPAMConfiguration
+    plural: ipamconfigurations
+    shortNames: []
+    singular: ipamconfiguration
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for IpamConfigurationSpec via `CustomResource`
+        properties:
+          spec:
+            description: Spec for the singleton `IPAMConfiguration` resource.
+            properties:
+              autoAllocateBlocks:
+                type: boolean
+              maxBlocksPerHost:
+                default: 0
+                format: uint32
+                minimum: 0.0
+                type: integer
+              strictAffinity:
+                type: boolean
+            required:
+            - autoAllocateBlocks
+            - strictAffinity
+            type: object
+        required:
+        - spec
+        title: IPAMConfiguration
+        type: object
+    served: true
+    storage: true
+    subresources: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: hostendpoints.crd.projectcalico.org
+spec:
+  group: crd.projectcalico.org
+  names:
+    categories: []
+    kind: HostEndpoint
+    plural: hostendpoints
+    shortNames: []
+    singular: hostendpoint
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for HostEndpointSpec via `CustomResource`
+        properties:
+          spec:
+            description: |-
+              Spec for the cluster-scoped `HostEndpoint` resource — a host interface that
+              can itself be subject to policy.
+            properties:
+              expectedIps:
+                items:
+                  type: string
+                type: array
+              interfaceName:
+                nullable: true
+                type: string
+              node:
+                type: string
+              profiles:
+                items:
+                  type: string
+                type: array
+            required:
+            - node
+            type: object
+        required:
+        - spec
+        title: HostEndpoint
+        type: object
+    served: true
+    storage: true
+    subresources: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: networksets.crd.projectcalico.org
+spec:
+  group: crd.projectcalico.org
+  names:
+    categories: []
+    kind: NetworkSet
+    plural: networksets
+    shortNames: []
+    singular: networkset
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for NetworkSetSpec via `CustomResource`
+        properties:
+          spec:
+            description: |-
+              Spec for the namespaced `NetworkSet` resource — a labeled set of CIDRs
+              referenced by policy selectors.
+            properties:
+              nets:
+                items:
+                  type: string
+                type: array
+            type: object
+        required:
+        - spec
+        title: NetworkSet
+        type: object
+    served: true
+    storage: true
+    subresources: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: globalnetworksets.crd.projectcalico.org
+spec:
+  group: crd.projectcalico.org
+  names:
+    categories: []
+    kind: GlobalNetworkSet
+    plural: globalnetworksets
+    shortNames: []
+    singular: globalnetworkset
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for GlobalNetworkSetSpec via `CustomResource`
+        properties:
+          spec:
+            description: Spec for the cluster-scoped `GlobalNetworkSet` resource.
+            properties:
+              nets:
+                items:
+                  type: string
+                type: array
+            type: object
+        required:
+        - spec
+        title: GlobalNetworkSet
+        type: object
+    served: true
+    storage: true
+    subresources: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: bgpconfigurations.crd.projectcalico.org
+spec:
+  group: crd.projectcalico.org
+  names:
+    categories: []
+    kind: BGPConfiguration
+    plural: bgpconfigurations
+    shortNames: []
+    singular: bgpconfiguration
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for BgpConfigurationSpec via `CustomResource`
+        properties:
+          spec:
+            description: Spec for the singleton `BGPConfiguration` resource.
+            properties:
+              asNumber:
+                format: uint32
+                minimum: 0.0
+                nullable: true
+                type: integer
+              listenPort:
+                format: uint16
+                maximum: 65535.0
+                minimum: 0.0
+                nullable: true
+                type: integer
+              logSeverityScreen:
+                nullable: true
+                type: string
+              nodeToNodeMeshEnabled:
+                nullable: true
+                type: boolean
+            type: object
+        required:
+        - spec
+        title: BGPConfiguration
+        type: object
+    served: true
+    storage: true
+    subresources: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: bgppeers.crd.projectcalico.org
+spec:
+  group: crd.projectcalico.org
+  names:
+    categories: []
+    kind: BGPPeer
+    plural: bgppeers
+    shortNames: []
+    singular: bgppeer
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for BgpPeerSpec via `CustomResource`
+        properties:
+          spec:
+            description: Spec for the cluster-scoped `BGPPeer` resource.
+            properties:
+              asNumber:
+                format: uint32
+                minimum: 0.0
+                nullable: true
+                type: integer
+              node:
+                nullable: true
+                type: string
+              nodeSelector:
+                nullable: true
+                type: string
+              peerIP:
+                nullable: true
+                type: string
+              peerSelector:
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: BGPPeer
+        type: object
+    served: true
+    storage: true
+    subresources: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: felixconfigurations.crd.projectcalico.org
+spec:
+  group: crd.projectcalico.org
+  names:
+    categories: []
+    kind: FelixConfiguration
+    plural: felixconfigurations
+    shortNames: []
+    singular: felixconfiguration
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for FelixConfigurationSpec via `CustomResource`
+        properties:
+          spec:
+            description: |-
+              Spec for the `FelixConfiguration` resource (representative subset of the many
+              Felix parameters; extended as the dataplane grows).
+            properties:
+              bpfEnabled:
+                nullable: true
+                type: boolean
+              defaultEndpointToHostAction:
+                nullable: true
+                type: string
+              interfacePrefix:
+                nullable: true
+                type: string
+              logSeverityScreen:
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: FelixConfiguration
+        type: object
+    served: true
+    storage: true
+    subresources: {}

@@ -1,0 +1,8 @@
+# The eBPF kernel-side crate is the ONLY part of the workspace that requires
+# nightly Rust: aya-ebpf codegen targets `bpfel-unknown-none` via `-Z build-std`.
+# This file is scoped to `crates/felix-ebpf/` so the rest of the workspace stays
+# on the stable toolchain. See specs/001-calico-rs-rust-rewrite/research.md §2.
+[toolchain]
+channel = "nightly"
+components = ["rust-src", "rustfmt", "clippy"]
+targets = ["bpfel-unknown-none", "bpfeb-unknown-none"]

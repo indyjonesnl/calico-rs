@@ -1,0 +1,24 @@
+# Bootstrap Calico resources for calico-rs on kind.
+# The CNI plugin gates on ClusterInformation.datastoreReady and allocates from
+# the first enabled IPPool. No encap yet (single-node substrate; VXLAN/BGP land
+# in the cross-node dataplane work).
+apiVersion: crd.projectcalico.org/v1
+kind: ClusterInformation
+metadata:
+  name: default
+spec:
+  clusterType: k8s
+  datastoreReady: true
+  calicoVersion: calico-rs-dev
+---
+apiVersion: crd.projectcalico.org/v1
+kind: IPPool
+metadata:
+  name: default-ipv4-ippool
+spec:
+  cidr: 192.168.0.0/16
+  blockSize: 26
+  ipipMode: Never
+  vxlanMode: Always
+  natOutgoing: true
+  disabled: false

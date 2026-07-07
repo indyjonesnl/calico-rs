@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Userspace workspace: stable toolchain, excludes the nightly eBPF crate.
+  build-test:
+    name: build + test (stable, userspace)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --workspace --exclude felix-ebpf --all-targets -- -D warnings
+      - name: build
+        run: cargo build --workspace --exclude felix-ebpf --all-targets
+      - name: test
+        run: cargo test --workspace --exclude felix-ebpf
+
+  # eBPF kernel programs: nightly toolchain + build-std against the BPF target.
+  build-ebpf:
+    name: build (nightly, felix-ebpf)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install bpf-linker
+        run: cargo install bpf-linker
+      - name: build felix-ebpf
+        working-directory: crates/felix-ebpf
+        run: cargo build --target bpfel-unknown-none -Z build-std=core
+        # The pinned rust-toolchain.toml in crates/felix-ebpf selects nightly.
+        continue-on-error: true # stub crate today; becomes required with US3 (T063+)

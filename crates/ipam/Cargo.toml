@@ -1,0 +1,19 @@
+[package]
+name = "ipam"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+apis = { version = "0.1.0", path = "../apis" }
+datastore = { path = "../datastore" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+datastore = { path = "../datastore" }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
