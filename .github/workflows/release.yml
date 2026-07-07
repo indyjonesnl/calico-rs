@@ -1,0 +1,80 @@
+name: Release image
+
+# Build and publish the calico-rs node image to GHCR. Triggers when a version
+# tag is pushed or a GitHub Release is published (either path sets the image
+# tag from the git tag), plus a manual dispatch for re-runs.
+on:
+  push:
+    tags: ["v*"]
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to publish (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+  TARGET: x86_64-unknown-linux-musl
+
+jobs:
+  image:
+    name: build + push image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install musl toolchain
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      # Static musl binaries (kind/most nodes run older glibc than the builder;
+      # static linking avoids the mismatch). Mirrors scripts/build-image.sh.
+      - name: Build static binaries
+        run: |
+          CC_x86_64_unknown_linux_musl=musl-gcc \
+          cargo build --release --target "$TARGET" \
+            -p node        --bin calico-rs-node \
+            -p controllers --bin calico-rs-controllers \
+            -p cni         --bin calico
+
+      - name: Stage build context
+        run: |
+          mkdir -p deploy/.build
+          cp "target/$TARGET/release/calico-rs-node"        deploy/.build/
+          cp "target/$TARGET/release/calico-rs-controllers" deploy/.build/
+          cp "target/$TARGET/release/calico"                deploy/.build/
+          cp deploy/Dockerfile                              deploy/.build/
+
+      - name: Resolve image tag
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: deploy/.build
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
+            ${{ env.IMAGE }}:latest

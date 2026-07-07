@@ -31,3 +31,6 @@ junit_*.xml
 # Spec Kit working files (kept local, never pushed)
 .specify/
 specs/
+
+# Image build context (staged by build-image.sh / CI)
+deploy/.build/
