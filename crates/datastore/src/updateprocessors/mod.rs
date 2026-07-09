@@ -588,6 +588,24 @@ pub fn process(
     }
 }
 
+/// Derive just the v1 **key(s)** a v3 resource maps to, discarding the v1
+/// values. This is what a purpose-built syncer uses on **delete**: it reuses
+/// [`process`]'s exact key conversion (run over the last-known spec the delete
+/// event carries) so the emitted v1 delete key(s) match the v1 update key(s)
+/// the same resource produced. A resource that flattens into many v1 pairs (a
+/// `FelixConfiguration`) yields many keys; a filtered-out resource (a
+/// `WorkloadEndpoint` with no IP networks) yields none.
+pub fn process_keys(
+    kind: ResourceKind,
+    key: &Key,
+    spec: &serde_json::Value,
+) -> Result<Vec<V1Key>, ProcessError> {
+    Ok(process(kind, key, spec)?
+        .into_iter()
+        .map(|kv| kv.key)
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
