@@ -76,7 +76,7 @@ impl KddBackend {
         Ok(Self::new(client))
     }
 
-    pub(crate) fn api_resource(kind: ResourceKind) -> ApiResource {
+    fn api_resource(kind: ResourceKind) -> ApiResource {
         let gvk = GroupVersionKind::gvk(GROUP, VERSION, kind.kind_name());
         ApiResource::from_gvk_with_plural(&gvk, kind.as_str())
     }
@@ -222,7 +222,7 @@ impl KddBackend {
     }
 }
 
-pub(crate) enum Op {
+enum Op {
     Create,
     Get,
     Update,
@@ -230,7 +230,7 @@ pub(crate) enum Op {
     List,
 }
 
-pub(crate) fn map_err(e: kube::Error, op: Op) -> CasError {
+fn map_err(e: kube::Error, op: Op) -> CasError {
     match e {
         kube::Error::Api(resp) => match resp.code {
             404 => CasError::NotFound,
@@ -247,7 +247,7 @@ pub(crate) fn map_err(e: kube::Error, op: Op) -> CasError {
     }
 }
 
-pub(crate) fn to_value(obj: DynamicObject) -> Result<KddValue, CasError> {
+fn to_value(obj: DynamicObject) -> Result<KddValue, CasError> {
     let name = obj
         .metadata
         .name

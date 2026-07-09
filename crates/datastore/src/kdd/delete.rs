@@ -16,7 +16,7 @@
 //! `libcalico-go/lib/backend/model/block_affinity.go`.
 
 use data_encoding::BASE32_NOPAD;
-use kube::api::{DeleteParams, DynamicObject, ListParams, PostParams, Preconditions};
+use kube::api::{DeleteParams, ListParams, PostParams, Preconditions};
 use serde_json::json;
 use sha3::{Digest, Sha3_256};
 
@@ -79,22 +79,14 @@ impl KddBackend {
             .clone()
             .unwrap_or_default();
 
-        let mut spec = existing
-            .data
-            .get("spec")
-            .cloned()
-            .unwrap_or_else(|| json!({}));
-        match spec.as_object_mut() {
-            Some(map) => {
+        let mut obj = existing;
+        if let Some(root) = obj.data.as_object_mut() {
+            let spec = root.entry("spec").or_insert_with(|| json!({}));
+            if let Some(map) = spec.as_object_mut() {
                 map.insert("deleted".to_string(), json!(true));
             }
-            None => spec = json!({ "deleted": true }),
         }
-
-        let ar = KddBackend::api_resource(kind);
-        let mut obj = DynamicObject::new(name, &ar);
         obj.metadata.resource_version = Some(raw_revision);
-        obj.data = json!({ "spec": spec });
         let updated = match api.replace(name, &PostParams::default(), &obj).await {
             Ok(updated) => updated,
             Err(kube::Error::Api(resp)) if resp.code == 404 => return Ok(()), // idempotent
