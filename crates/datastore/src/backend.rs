@@ -14,7 +14,7 @@ use futures::stream::{BoxStream, StreamExt};
 use serde_json::Value;
 
 use crate::cas::{CasError, CasStore, Revision};
-use crate::kdd::KddBackend;
+use crate::kdd::{KddBackend, KddValue};
 use crate::mem::MemStore;
 use crate::model::{cidr_to_token, KVPair, Key, ResourceKind};
 use crate::syncer::{SyncerEvent, UpdateType};
@@ -177,6 +177,22 @@ pub fn key_to_target(key: &Key) -> (ResourceKind, Option<String>, String) {
             sanitize_name(&format!("{}-{}", host, cidr_to_token(cidr))),
         ),
         Key::IpamHandle { id } => (ResourceKind::IpamHandle, None, sanitize_name(id)),
+    }
+}
+
+/// Reconstruct the namespaced [`Key`] for one item of a KDD list: prefer the
+/// item's own `metadata.namespace` (so a cluster-wide list of a namespaced kind
+/// keeps each item in its own namespace and same-named items in different
+/// namespaces stay distinct), falling back to the list's namespace when the
+/// item carries none (cluster-scoped kinds).
+fn list_item_key(kind: ResourceKind, opts_namespace: Option<&str>, v: &KddValue) -> Key {
+    Key::Resource {
+        kind,
+        namespace: v
+            .namespace
+            .clone()
+            .or_else(|| opts_namespace.map(str::to_string)),
+        name: v.name.clone(),
     }
 }
 
@@ -385,15 +401,8 @@ impl Backend for KddBackend {
             .into_iter()
             .map(|v| {
                 revision = revision.max(v.revision);
-                KVPair::with_revision(
-                    Key::Resource {
-                        kind: opts.kind,
-                        namespace: opts.namespace.clone(),
-                        name: v.name,
-                    },
-                    v.spec,
-                    v.revision,
-                )
+                let key = list_item_key(opts.kind, opts.namespace.as_deref(), &v);
+                KVPair::with_revision(key, v.spec, v.revision)
             })
             .collect();
         Ok(KVPairList { items, revision })
@@ -678,6 +687,59 @@ mod tests {
             DsError::from(CasError::Backend("boom".into())),
             DsError::Datastore("boom".into())
         );
+    }
+
+    fn kdd_value(name: &str, namespace: Option<&str>) -> KddValue {
+        KddValue {
+            name: name.to_string(),
+            namespace: namespace.map(str::to_string),
+            spec: json!({}),
+            revision: 1,
+            raw_revision: "1".to_string(),
+        }
+    }
+
+    /// Regression (T015 review): a cluster-wide list (`opts.namespace == None`)
+    /// of a namespaced kind must reconstruct each item's namespaced key from the
+    /// item's own `metadata.namespace`. Two same-named items in different
+    /// namespaces must yield distinct keys — before this fix both listed with
+    /// `namespace = None` and collided.
+    #[test]
+    fn list_item_key_preserves_per_item_namespace() {
+        let a = kdd_value("dup", Some("ns1"));
+        let b = kdd_value("dup", Some("ns2"));
+
+        let ka = list_item_key(ResourceKind::NetworkPolicy, None, &a);
+        let kb = list_item_key(ResourceKind::NetworkPolicy, None, &b);
+
+        assert_eq!(
+            ka,
+            res_key(ResourceKind::NetworkPolicy, Some("ns1"), "dup")
+        );
+        assert_eq!(
+            kb,
+            res_key(ResourceKind::NetworkPolicy, Some("ns2"), "dup")
+        );
+        assert_ne!(ka, kb, "same-named items in different namespaces must not collide");
+        assert_ne!(ka.path(), kb.path());
+    }
+
+    /// A namespace-scoped list still labels items lacking their own namespace
+    /// with the list's namespace; a cluster-scoped item (no namespace, no opts
+    /// namespace) stays cluster-scoped.
+    #[test]
+    fn list_item_key_namespace_fallback() {
+        // Item without its own namespace, listed within a namespace.
+        let scoped = list_item_key(
+            ResourceKind::NetworkPolicy,
+            Some("ns1"),
+            &kdd_value("p", None),
+        );
+        assert_eq!(scoped, res_key(ResourceKind::NetworkPolicy, Some("ns1"), "p"));
+
+        // Cluster-scoped kind: no namespace anywhere.
+        let cluster = list_item_key(ResourceKind::IpPool, None, &kdd_value("pool", None));
+        assert_eq!(cluster, res_key(ResourceKind::IpPool, None, "pool"));
     }
 
     #[test]

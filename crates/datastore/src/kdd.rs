@@ -31,6 +31,10 @@ const VERSION: &str = "v1";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KddValue {
     pub name: String,
+    /// The object's `metadata.namespace`, if any. Preserved so a cluster-wide
+    /// list of a namespaced kind can reconstruct the namespaced [`crate::Key`]
+    /// — without it, same-named resources in different namespaces collide.
+    pub namespace: Option<String>,
     pub spec: Value,
     /// Kubernetes `resourceVersion`, parsed to our numeric [`Revision`].
     pub revision: Revision,
@@ -253,6 +257,7 @@ fn to_value(obj: DynamicObject) -> Result<KddValue, CasError> {
         .name
         .clone()
         .ok_or_else(|| CasError::Backend("object has no name".into()))?;
+    let namespace = obj.metadata.namespace.clone();
     let raw_revision = obj.metadata.resource_version.clone().unwrap_or_default();
     let revision = raw_revision.parse::<Revision>().unwrap_or(0);
     let spec = obj
@@ -262,6 +267,7 @@ fn to_value(obj: DynamicObject) -> Result<KddValue, CasError> {
         .unwrap_or(Value::Object(Default::default()));
     Ok(KddValue {
         name,
+        namespace,
         spec,
         revision,
         raw_revision,
