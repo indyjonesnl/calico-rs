@@ -478,13 +478,16 @@ checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 name = "datastore"
 version = "0.1.0"
 dependencies = [
+ "apis",
  "async-trait",
  "data-encoding",
  "futures",
+ "hex",
  "k8s-openapi",
  "kube",
  "serde",
  "serde_json",
+ "sha1",
  "sha3",
  "tokio",
 ]

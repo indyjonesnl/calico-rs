@@ -12,6 +12,7 @@
 
 mod backend;
 mod cas;
+pub mod conversion;
 mod kdd;
 mod mem;
 mod model;
@@ -21,6 +22,12 @@ pub use backend::{
     key_to_target, Backend, DsError, KVPairList, ListOptions, MemBackend, WatchEvent,
 };
 pub use cas::{CasError, CasStore, Revision, Versioned};
+pub use conversion::{
+    namespace_object_to_profile, namespace_to_profile, node_to_calico_node,
+    pod_to_workload_endpoint, profile_name, service_account_profile_name,
+    service_account_to_profile, veth_name_for_workload, workload_endpoint_name,
+    WorkloadEndpointConversion,
+};
 pub use kdd::{
     hash_hostname_for_label, hostname_hash_label, KddBackend, KddValue, LABEL_HOSTNAME_HASH,
 };

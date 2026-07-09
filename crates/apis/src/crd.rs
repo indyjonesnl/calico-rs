@@ -34,6 +34,7 @@ pub fn crd_yaml() -> String {
         crate::BGPFilter::crd(),
         crate::KubeControllersConfiguration::crd(),
         crate::CalicoNodeStatus::crd(),
+        crate::Node::crd(),
     ];
     docs.iter()
         .map(|c| serde_yaml_ng::to_string(c).expect("CRD serializes to YAML"))
@@ -103,6 +104,7 @@ mod tests {
         assert!(yaml.contains("name: bgpfilters.crd.projectcalico.org"));
         assert!(yaml.contains("name: kubecontrollersconfigurations.crd.projectcalico.org"));
         assert!(yaml.contains("name: caliconodestatuses.crd.projectcalico.org"));
+        assert!(yaml.contains("name: nodes.crd.projectcalico.org"));
         assert!(yaml.contains("stagedAction"));
         assert!(yaml.contains("x-kubernetes-int-or-string"));
     }

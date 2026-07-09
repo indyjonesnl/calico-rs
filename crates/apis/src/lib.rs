@@ -19,6 +19,7 @@ mod config;
 pub mod crd;
 mod ipam;
 mod networking;
+mod node;
 mod policy;
 
 pub use bgp::{
@@ -41,6 +42,7 @@ pub use networking::{
     HostEndpointSpec, IPPool, IpPoolSpec, NetworkSet, NetworkSetSpec, WorkloadEndpointSpec,
     WorkloadPort,
 };
+pub use node::{Node, NodeBgpSpec, NodeSpec, OrchRef};
 pub use policy::{
     Action, EntityRule, GlobalNetworkPolicy, GlobalNetworkPolicySpec, NetworkPolicy,
     NetworkPolicySpec, PolicyType, Profile, ProfileSpec, Protocol, Rule, StagedAction,

@@ -17,43 +17,16 @@ use std::sync::Arc;
 use std::collections::BTreeSet;
 
 use anyhow::{Context, Result};
-use apis::{Action, ProfileSpec, Rule};
 use datastore::{cidr_to_token, KddBackend, ResourceKind};
+// The namespace→Profile mapping is canonicalized in `datastore::conversion`
+// (task T018); `controllers` re-exports it so callers and tests keep the same
+// paths and the wire output stays byte-identical (cluster-verified).
+pub use datastore::{namespace_to_profile, profile_name};
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{Namespace, Node};
 use kube::runtime::controller::Action as CtrlAction;
 use kube::runtime::{watcher, Controller};
 use kube::{Api, Client, ResourceExt};
-
-/// Profile name for a namespace, matching upstream (`kns.<namespace>`).
-pub fn profile_name(namespace: &str) -> String {
-    format!("kns.{namespace}")
-}
-
-/// Pure mapping: a namespace name + its labels → the Profile it should produce.
-/// Namespace labels are exposed to policy under the `pcns.` prefix; the profile
-/// applies a default allow posture.
-pub fn namespace_to_profile(
-    namespace: &str,
-    labels: &BTreeMap<String, String>,
-) -> (String, ProfileSpec) {
-    let labels_to_apply = labels
-        .iter()
-        .map(|(k, v)| (format!("pcns.{k}"), v.clone()))
-        .collect();
-    let allow = || Rule {
-        action: Action::Allow,
-        protocol: None,
-        source: Default::default(),
-        destination: Default::default(),
-    };
-    let spec = ProfileSpec {
-        ingress: vec![allow()],
-        egress: vec![allow()],
-        labels_to_apply,
-    };
-    (profile_name(namespace), spec)
-}
 
 /// Upsert the Profile for one namespace into the datastore (create or CAS-update).
 async fn upsert_profile(
@@ -302,6 +275,7 @@ pub async fn run(client: Client) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use apis::Action;
 
     #[test]
     fn maps_labels_to_pcns_prefix_and_allow_posture() {
