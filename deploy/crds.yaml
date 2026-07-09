@@ -1268,3 +1268,1205 @@ spec:
     served: true
     storage: true
     subresources: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: stagednetworkpolicies.crd.projectcalico.org
+spec:
+  group: crd.projectcalico.org
+  names:
+    categories: []
+    kind: StagedNetworkPolicy
+    plural: stagednetworkpolicies
+    shortNames: []
+    singular: stagednetworkpolicy
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for StagedNetworkPolicySpec via `CustomResource`
+        properties:
+          spec:
+            description: |-
+              Spec for the namespaced `StagedNetworkPolicy` resource — a dry-run
+              counterpart of [`NetworkPolicy`] used to preview policy changes without
+              enforcing them. Mirrors [`NetworkPolicySpec`] plus `stagedAction`.
+            properties:
+              egress:
+                items:
+                  description: A single policy rule.
+                  properties:
+                    action:
+                      description: 'Rule action. Wire values match upstream: `Allow` / `Deny` / `Log` / `Pass`.'
+                      enum:
+                      - Allow
+                      - Deny
+                      - Log
+                      - Pass
+                      type: string
+                    destination:
+                      description: One side (source or destination) of a rule.
+                      properties:
+                        namespaceSelector:
+                          nullable: true
+                          type: string
+                        nets:
+                          items:
+                            type: string
+                          type: array
+                        notNets:
+                          items:
+                            type: string
+                          type: array
+                        ports:
+                          items:
+                            format: uint16
+                            maximum: 65535.0
+                            minimum: 0.0
+                            type: integer
+                          type: array
+                        selector:
+                          nullable: true
+                          type: string
+                        serviceAccounts:
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                    protocol:
+                      nullable: true
+                      x-kubernetes-int-or-string: true
+                    source:
+                      description: One side (source or destination) of a rule.
+                      properties:
+                        namespaceSelector:
+                          nullable: true
+                          type: string
+                        nets:
+                          items:
+                            type: string
+                          type: array
+                        notNets:
+                          items:
+                            type: string
+                          type: array
+                        ports:
+                          items:
+                            format: uint16
+                            maximum: 65535.0
+                            minimum: 0.0
+                            type: integer
+                          type: array
+                        selector:
+                          nullable: true
+                          type: string
+                        serviceAccounts:
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                  required:
+                  - action
+                  type: object
+                type: array
+              ingress:
+                items:
+                  description: A single policy rule.
+                  properties:
+                    action:
+                      description: 'Rule action. Wire values match upstream: `Allow` / `Deny` / `Log` / `Pass`.'
+                      enum:
+                      - Allow
+                      - Deny
+                      - Log
+                      - Pass
+                      type: string
+                    destination:
+                      description: One side (source or destination) of a rule.
+                      properties:
+                        namespaceSelector:
+                          nullable: true
+                          type: string
+                        nets:
+                          items:
+                            type: string
+                          type: array
+                        notNets:
+                          items:
+                            type: string
+                          type: array
+                        ports:
+                          items:
+                            format: uint16
+                            maximum: 65535.0
+                            minimum: 0.0
+                            type: integer
+                          type: array
+                        selector:
+                          nullable: true
+                          type: string
+                        serviceAccounts:
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                    protocol:
+                      nullable: true
+                      x-kubernetes-int-or-string: true
+                    source:
+                      description: One side (source or destination) of a rule.
+                      properties:
+                        namespaceSelector:
+                          nullable: true
+                          type: string
+                        nets:
+                          items:
+                            type: string
+                          type: array
+                        notNets:
+                          items:
+                            type: string
+                          type: array
+                        ports:
+                          items:
+                            format: uint16
+                            maximum: 65535.0
+                            minimum: 0.0
+                            type: integer
+                          type: array
+                        selector:
+                          nullable: true
+                          type: string
+                        serviceAccounts:
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                  required:
+                  - action
+                  type: object
+                type: array
+              order:
+                format: double
+                nullable: true
+                type: number
+              selector:
+                type: string
+              stagedAction:
+                default: Set
+                description: |-
+                  The action a staged policy would take if promoted to its enforced
+                  counterpart. Wire values match upstream: `Set` / `Delete` / `Learn` /
+                  `Ignore`.
+                enum:
+                - Set
+                - Delete
+                - Learn
+                - Ignore
+                type: string
+              tier:
+                nullable: true
+                type: string
+              types:
+                items:
+                  description: Which directions a policy governs.
+                  enum:
+                  - Ingress
+                  - Egress
+                  type: string
+                type: array
+            type: object
+        required:
+        - spec
+        title: StagedNetworkPolicy
+        type: object
+    served: true
+    storage: true
+    subresources: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: stagedglobalnetworkpolicies.crd.projectcalico.org
+spec:
+  group: crd.projectcalico.org
+  names:
+    categories: []
+    kind: StagedGlobalNetworkPolicy
+    plural: stagedglobalnetworkpolicies
+    shortNames: []
+    singular: stagedglobalnetworkpolicy
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for StagedGlobalNetworkPolicySpec via `CustomResource`
+        properties:
+          spec:
+            description: |-
+              Spec for the cluster-scoped `StagedGlobalNetworkPolicy` resource. Mirrors
+              [`GlobalNetworkPolicySpec`] plus `stagedAction`.
+            properties:
+              applyOnForward:
+                default: false
+                type: boolean
+              doNotTrack:
+                default: false
+                type: boolean
+              egress:
+                items:
+                  description: A single policy rule.
+                  properties:
+                    action:
+                      description: 'Rule action. Wire values match upstream: `Allow` / `Deny` / `Log` / `Pass`.'
+                      enum:
+                      - Allow
+                      - Deny
+                      - Log
+                      - Pass
+                      type: string
+                    destination:
+                      description: One side (source or destination) of a rule.
+                      properties:
+                        namespaceSelector:
+                          nullable: true
+                          type: string
+                        nets:
+                          items:
+                            type: string
+                          type: array
+                        notNets:
+                          items:
+                            type: string
+                          type: array
+                        ports:
+                          items:
+                            format: uint16
+                            maximum: 65535.0
+                            minimum: 0.0
+                            type: integer
+                          type: array
+                        selector:
+                          nullable: true
+                          type: string
+                        serviceAccounts:
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                    protocol:
+                      nullable: true
+                      x-kubernetes-int-or-string: true
+                    source:
+                      description: One side (source or destination) of a rule.
+                      properties:
+                        namespaceSelector:
+                          nullable: true
+                          type: string
+                        nets:
+                          items:
+                            type: string
+                          type: array
+                        notNets:
+                          items:
+                            type: string
+                          type: array
+                        ports:
+                          items:
+                            format: uint16
+                            maximum: 65535.0
+                            minimum: 0.0
+                            type: integer
+                          type: array
+                        selector:
+                          nullable: true
+                          type: string
+                        serviceAccounts:
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                  required:
+                  - action
+                  type: object
+                type: array
+              ingress:
+                items:
+                  description: A single policy rule.
+                  properties:
+                    action:
+                      description: 'Rule action. Wire values match upstream: `Allow` / `Deny` / `Log` / `Pass`.'
+                      enum:
+                      - Allow
+                      - Deny
+                      - Log
+                      - Pass
+                      type: string
+                    destination:
+                      description: One side (source or destination) of a rule.
+                      properties:
+                        namespaceSelector:
+                          nullable: true
+                          type: string
+                        nets:
+                          items:
+                            type: string
+                          type: array
+                        notNets:
+                          items:
+                            type: string
+                          type: array
+                        ports:
+                          items:
+                            format: uint16
+                            maximum: 65535.0
+                            minimum: 0.0
+                            type: integer
+                          type: array
+                        selector:
+                          nullable: true
+                          type: string
+                        serviceAccounts:
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                    protocol:
+                      nullable: true
+                      x-kubernetes-int-or-string: true
+                    source:
+                      description: One side (source or destination) of a rule.
+                      properties:
+                        namespaceSelector:
+                          nullable: true
+                          type: string
+                        nets:
+                          items:
+                            type: string
+                          type: array
+                        notNets:
+                          items:
+                            type: string
+                          type: array
+                        ports:
+                          items:
+                            format: uint16
+                            maximum: 65535.0
+                            minimum: 0.0
+                            type: integer
+                          type: array
+                        selector:
+                          nullable: true
+                          type: string
+                        serviceAccounts:
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                  required:
+                  - action
+                  type: object
+                type: array
+              namespaceSelector:
+                type: string
+              order:
+                format: double
+                nullable: true
+                type: number
+              preDNAT:
+                default: false
+                type: boolean
+              selector:
+                type: string
+              stagedAction:
+                default: Set
+                description: |-
+                  The action a staged policy would take if promoted to its enforced
+                  counterpart. Wire values match upstream: `Set` / `Delete` / `Learn` /
+                  `Ignore`.
+                enum:
+                - Set
+                - Delete
+                - Learn
+                - Ignore
+                type: string
+              tier:
+                nullable: true
+                type: string
+              types:
+                items:
+                  description: Which directions a policy governs.
+                  enum:
+                  - Ingress
+                  - Egress
+                  type: string
+                type: array
+            type: object
+        required:
+        - spec
+        title: StagedGlobalNetworkPolicy
+        type: object
+    served: true
+    storage: true
+    subresources: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: stagedkubernetesnetworkpolicies.crd.projectcalico.org
+spec:
+  group: crd.projectcalico.org
+  names:
+    categories: []
+    kind: StagedKubernetesNetworkPolicy
+    plural: stagedkubernetesnetworkpolicies
+    shortNames: []
+    singular: stagedkubernetesnetworkpolicy
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for StagedKubernetesNetworkPolicySpec via `CustomResource`
+        properties:
+          spec:
+            description: |-
+              Spec for the namespaced `StagedKubernetesNetworkPolicy` resource — a
+              staged counterpart of a native Kubernetes `NetworkPolicy`. The
+              pod-selector/ingress/egress/policy-types fields reuse the upstream
+              Kubernetes wire types (`k8s_openapi::api::networking::v1`) directly rather
+              than reproducing them; this also gets `NetworkPolicyPort::port`'s
+              hand-written int-or-string `JsonSchema` for free.
+            properties:
+              egress:
+                items:
+                  description: NetworkPolicyEgressRule describes a particular set of traffic that is allowed out of pods matched by a NetworkPolicySpec's podSelector. The traffic must match both ports and to. This type is beta-level in 1.8
+                  properties:
+                    ports:
+                      description: ports is a list of destination ports for outgoing traffic. Each item in this list is combined using a logical OR. If this field is empty or missing, this rule matches all ports (traffic not restricted by port). If this field is present and contains at least one item, then this rule allows traffic only if the traffic matches at least one port in the list.
+                      items:
+                        description: NetworkPolicyPort describes a port to allow traffic on
+                        properties:
+                          endPort:
+                            description: endPort indicates that the range of ports from port to endPort if set, inclusive, should be allowed by the policy. This field cannot be defined if the port field is not defined or if the port field is defined as a named (string) port. The endPort must be equal or greater than port.
+                            format: int32
+                            type: integer
+                          port:
+                            description: port represents the port on the given protocol. This can either be a numerical or named port on a pod. If this field is not provided, this matches all port names and numbers. If present, only traffic on the specified protocol AND port will be matched.
+                            nullable: true
+                            x-kubernetes-int-or-string: true
+                          protocol:
+                            description: protocol represents the protocol (TCP, UDP, or SCTP) which traffic must match. If not specified, this field defaults to TCP.
+                            type: string
+                        type: object
+                      type: array
+                    to:
+                      description: to is a list of destinations for outgoing traffic of pods selected for this rule. Items in this list are combined using a logical OR operation. If this field is empty or missing, this rule matches all destinations (traffic not restricted by destination). If this field is present and contains at least one item, this rule allows traffic only if the traffic matches at least one item in the to list.
+                      items:
+                        description: NetworkPolicyPeer describes a peer to allow traffic to/from. Only certain combinations of fields are allowed
+                        properties:
+                          ipBlock:
+                            description: ipBlock defines policy on a particular IPBlock. If this field is set then neither of the other fields can be.
+                            properties:
+                              cidr:
+                                description: cidr is a string representing the IPBlock Valid examples are "192.168.1.0/24" or "2001:db8::/64"
+                                type: string
+                              except:
+                                description: except is a slice of CIDRs that should not be included within an IPBlock Valid examples are "192.168.1.0/24" or "2001:db8::/64" Except values will be rejected if they are outside the cidr range
+                                items:
+                                  type: string
+                                type: array
+                            required:
+                            - cidr
+                            type: object
+                          namespaceSelector:
+                            description: |-
+                              namespaceSelector selects namespaces using cluster-scoped labels. This field follows standard label selector semantics; if present but empty, it selects all namespaces.
+
+                              If podSelector is also set, then the NetworkPolicyPeer as a whole selects the pods matching podSelector in the namespaces selected by namespaceSelector. Otherwise it selects all pods in the namespaces selected by namespaceSelector.
+                            properties:
+                              matchExpressions:
+                                description: matchExpressions is a list of label selector requirements. The requirements are ANDed.
+                                items:
+                                  description: A label selector requirement is a selector that contains values, a key, and an operator that relates the key and values.
+                                  properties:
+                                    key:
+                                      description: key is the label key that the selector applies to.
+                                      type: string
+                                    operator:
+                                      description: operator represents a key's relationship to a set of values. Valid operators are In, NotIn, Exists and DoesNotExist.
+                                      type: string
+                                    values:
+                                      description: values is an array of string values. If the operator is In or NotIn, the values array must be non-empty. If the operator is Exists or DoesNotExist, the values array must be empty. This array is replaced during a strategic merge patch.
+                                      items:
+                                        type: string
+                                      type: array
+                                  required:
+                                  - key
+                                  - operator
+                                  type: object
+                                type: array
+                              matchLabels:
+                                additionalProperties:
+                                  type: string
+                                description: matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels map is equivalent to an element of matchExpressions, whose key field is "key", the operator is "In", and the values array contains only "value". The requirements are ANDed.
+                                type: object
+                            type: object
+                          podSelector:
+                            description: |-
+                              podSelector is a label selector which selects pods. This field follows standard label selector semantics; if present but empty, it selects all pods.
+
+                              If namespaceSelector is also set, then the NetworkPolicyPeer as a whole selects the pods matching podSelector in the Namespaces selected by NamespaceSelector. Otherwise it selects the pods matching podSelector in the policy's own namespace.
+                            properties:
+                              matchExpressions:
+                                description: matchExpressions is a list of label selector requirements. The requirements are ANDed.
+                                items:
+                                  description: A label selector requirement is a selector that contains values, a key, and an operator that relates the key and values.
+                                  properties:
+                                    key:
+                                      description: key is the label key that the selector applies to.
+                                      type: string
+                                    operator:
+                                      description: operator represents a key's relationship to a set of values. Valid operators are In, NotIn, Exists and DoesNotExist.
+                                      type: string
+                                    values:
+                                      description: values is an array of string values. If the operator is In or NotIn, the values array must be non-empty. If the operator is Exists or DoesNotExist, the values array must be empty. This array is replaced during a strategic merge patch.
+                                      items:
+                                        type: string
+                                      type: array
+                                  required:
+                                  - key
+                                  - operator
+                                  type: object
+                                type: array
+                              matchLabels:
+                                additionalProperties:
+                                  type: string
+                                description: matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels map is equivalent to an element of matchExpressions, whose key field is "key", the operator is "In", and the values array contains only "value". The requirements are ANDed.
+                                type: object
+                            type: object
+                        type: object
+                      type: array
+                  type: object
+                type: array
+              ingress:
+                items:
+                  description: NetworkPolicyIngressRule describes a particular set of traffic that is allowed to the pods matched by a NetworkPolicySpec's podSelector. The traffic must match both ports and from.
+                  properties:
+                    from:
+                      description: from is a list of sources which should be able to access the pods selected for this rule. Items in this list are combined using a logical OR operation. If this field is empty or missing, this rule matches all sources (traffic not restricted by source). If this field is present and contains at least one item, this rule allows traffic only if the traffic matches at least one item in the from list.
+                      items:
+                        description: NetworkPolicyPeer describes a peer to allow traffic to/from. Only certain combinations of fields are allowed
+                        properties:
+                          ipBlock:
+                            description: ipBlock defines policy on a particular IPBlock. If this field is set then neither of the other fields can be.
+                            properties:
+                              cidr:
+                                description: cidr is a string representing the IPBlock Valid examples are "192.168.1.0/24" or "2001:db8::/64"
+                                type: string
+                              except:
+                                description: except is a slice of CIDRs that should not be included within an IPBlock Valid examples are "192.168.1.0/24" or "2001:db8::/64" Except values will be rejected if they are outside the cidr range
+                                items:
+                                  type: string
+                                type: array
+                            required:
+                            - cidr
+                            type: object
+                          namespaceSelector:
+                            description: |-
+                              namespaceSelector selects namespaces using cluster-scoped labels. This field follows standard label selector semantics; if present but empty, it selects all namespaces.
+
+                              If podSelector is also set, then the NetworkPolicyPeer as a whole selects the pods matching podSelector in the namespaces selected by namespaceSelector. Otherwise it selects all pods in the namespaces selected by namespaceSelector.
+                            properties:
+                              matchExpressions:
+                                description: matchExpressions is a list of label selector requirements. The requirements are ANDed.
+                                items:
+                                  description: A label selector requirement is a selector that contains values, a key, and an operator that relates the key and values.
+                                  properties:
+                                    key:
+                                      description: key is the label key that the selector applies to.
+                                      type: string
+                                    operator:
+                                      description: operator represents a key's relationship to a set of values. Valid operators are In, NotIn, Exists and DoesNotExist.
+                                      type: string
+                                    values:
+                                      description: values is an array of string values. If the operator is In or NotIn, the values array must be non-empty. If the operator is Exists or DoesNotExist, the values array must be empty. This array is replaced during a strategic merge patch.
+                                      items:
+                                        type: string
+                                      type: array
+                                  required:
+                                  - key
+                                  - operator
+                                  type: object
+                                type: array
+                              matchLabels:
+                                additionalProperties:
+                                  type: string
+                                description: matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels map is equivalent to an element of matchExpressions, whose key field is "key", the operator is "In", and the values array contains only "value". The requirements are ANDed.
+                                type: object
+                            type: object
+                          podSelector:
+                            description: |-
+                              podSelector is a label selector which selects pods. This field follows standard label selector semantics; if present but empty, it selects all pods.
+
+                              If namespaceSelector is also set, then the NetworkPolicyPeer as a whole selects the pods matching podSelector in the Namespaces selected by NamespaceSelector. Otherwise it selects the pods matching podSelector in the policy's own namespace.
+                            properties:
+                              matchExpressions:
+                                description: matchExpressions is a list of label selector requirements. The requirements are ANDed.
+                                items:
+                                  description: A label selector requirement is a selector that contains values, a key, and an operator that relates the key and values.
+                                  properties:
+                                    key:
+                                      description: key is the label key that the selector applies to.
+                                      type: string
+                                    operator:
+                                      description: operator represents a key's relationship to a set of values. Valid operators are In, NotIn, Exists and DoesNotExist.
+                                      type: string
+                                    values:
+                                      description: values is an array of string values. If the operator is In or NotIn, the values array must be non-empty. If the operator is Exists or DoesNotExist, the values array must be empty. This array is replaced during a strategic merge patch.
+                                      items:
+                                        type: string
+                                      type: array
+                                  required:
+                                  - key
+                                  - operator
+                                  type: object
+                                type: array
+                              matchLabels:
+                                additionalProperties:
+                                  type: string
+                                description: matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels map is equivalent to an element of matchExpressions, whose key field is "key", the operator is "In", and the values array contains only "value". The requirements are ANDed.
+                                type: object
+                            type: object
+                        type: object
+                      type: array
+                    ports:
+                      description: ports is a list of ports which should be made accessible on the pods selected for this rule. Each item in this list is combined using a logical OR. If this field is empty or missing, this rule matches all ports (traffic not restricted by port). If this field is present and contains at least one item, then this rule allows traffic only if the traffic matches at least one port in the list.
+                      items:
+                        description: NetworkPolicyPort describes a port to allow traffic on
+                        properties:
+                          endPort:
+                            description: endPort indicates that the range of ports from port to endPort if set, inclusive, should be allowed by the policy. This field cannot be defined if the port field is not defined or if the port field is defined as a named (string) port. The endPort must be equal or greater than port.
+                            format: int32
+                            type: integer
+                          port:
+                            description: port represents the port on the given protocol. This can either be a numerical or named port on a pod. If this field is not provided, this matches all port names and numbers. If present, only traffic on the specified protocol AND port will be matched.
+                            nullable: true
+                            x-kubernetes-int-or-string: true
+                          protocol:
+                            description: protocol represents the protocol (TCP, UDP, or SCTP) which traffic must match. If not specified, this field defaults to TCP.
+                            type: string
+                        type: object
+                      type: array
+                  type: object
+                type: array
+              podSelector:
+                default: {}
+                description: A label selector is a label query over a set of resources. The result of matchLabels and matchExpressions are ANDed. An empty label selector matches all objects. A null label selector matches no objects.
+                properties:
+                  matchExpressions:
+                    description: matchExpressions is a list of label selector requirements. The requirements are ANDed.
+                    items:
+                      description: A label selector requirement is a selector that contains values, a key, and an operator that relates the key and values.
+                      properties:
+                        key:
+                          description: key is the label key that the selector applies to.
+                          type: string
+                        operator:
+                          description: operator represents a key's relationship to a set of values. Valid operators are In, NotIn, Exists and DoesNotExist.
+                          type: string
+                        values:
+                          description: values is an array of string values. If the operator is In or NotIn, the values array must be non-empty. If the operator is Exists or DoesNotExist, the values array must be empty. This array is replaced during a strategic merge patch.
+                          items:
+                            type: string
+                          type: array
+                      required:
+                      - key
+                      - operator
+                      type: object
+                    type: array
+                  matchLabels:
+                    additionalProperties:
+                      type: string
+                    description: matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels map is equivalent to an element of matchExpressions, whose key field is "key", the operator is "In", and the values array contains only "value". The requirements are ANDed.
+                    type: object
+                type: object
+              policyTypes:
+                items:
+                  description: Which directions a policy governs.
+                  enum:
+                  - Ingress
+                  - Egress
+                  type: string
+                type: array
+              stagedAction:
+                default: Set
+                description: |-
+                  The action a staged policy would take if promoted to its enforced
+                  counterpart. Wire values match upstream: `Set` / `Delete` / `Learn` /
+                  `Ignore`.
+                enum:
+                - Set
+                - Delete
+                - Learn
+                - Ignore
+                type: string
+            type: object
+        required:
+        - spec
+        title: StagedKubernetesNetworkPolicy
+        type: object
+    served: true
+    storage: true
+    subresources: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: bgpfilters.crd.projectcalico.org
+spec:
+  group: crd.projectcalico.org
+  names:
+    categories: []
+    kind: BGPFilter
+    plural: bgpfilters
+    shortNames: []
+    singular: bgpfilter
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for BgpFilterSpec via `CustomResource`
+        properties:
+          spec:
+            description: |-
+              Spec for the cluster-scoped `BGPFilter` resource — ordered import/export
+              route filter rules applied to BGP peerings.
+            properties:
+              exportV4:
+                items:
+                  description: |-
+                    A single IPv4 BGP filter rule (representative subset of upstream's
+                    `BGPFilterRuleV4`).
+                  properties:
+                    action:
+                      description: |-
+                        Terminal action for a BGP filter rule. Wire values match upstream:
+                        `Accept` / `Reject`.
+                      enum:
+                      - Accept
+                      - Reject
+                      type: string
+                    cidr:
+                      nullable: true
+                      type: string
+                    interface:
+                      nullable: true
+                      type: string
+                    matchOperator:
+                      description: |-
+                        How a BGP filter rule's `cidr` match is applied. Wire values match
+                        upstream: `Equal` / `NotEqual` / `In` / `NotIn`.
+                      enum:
+                      - Equal
+                      - NotEqual
+                      - In
+                      - NotIn
+                      - null
+                      nullable: true
+                      type: string
+                    prefixLength:
+                      description: |-
+                        Restricts the range of prefix lengths a `cidr` match applies to. Shared
+                        shape between the V4 and V6 rule variants (upstream models these as two
+                        distinct but structurally identical types).
+                      nullable: true
+                      properties:
+                        max:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        min:
+                          format: int32
+                          nullable: true
+                          type: integer
+                      type: object
+                    source:
+                      nullable: true
+                      type: string
+                  required:
+                  - action
+                  type: object
+                type: array
+              exportV6:
+                items:
+                  description: |-
+                    A single IPv6 BGP filter rule (representative subset of upstream's
+                    `BGPFilterRuleV6`).
+                  properties:
+                    action:
+                      description: |-
+                        Terminal action for a BGP filter rule. Wire values match upstream:
+                        `Accept` / `Reject`.
+                      enum:
+                      - Accept
+                      - Reject
+                      type: string
+                    cidr:
+                      nullable: true
+                      type: string
+                    interface:
+                      nullable: true
+                      type: string
+                    matchOperator:
+                      description: |-
+                        How a BGP filter rule's `cidr` match is applied. Wire values match
+                        upstream: `Equal` / `NotEqual` / `In` / `NotIn`.
+                      enum:
+                      - Equal
+                      - NotEqual
+                      - In
+                      - NotIn
+                      - null
+                      nullable: true
+                      type: string
+                    prefixLength:
+                      description: |-
+                        Restricts the range of prefix lengths a `cidr` match applies to. Shared
+                        shape between the V4 and V6 rule variants (upstream models these as two
+                        distinct but structurally identical types).
+                      nullable: true
+                      properties:
+                        max:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        min:
+                          format: int32
+                          nullable: true
+                          type: integer
+                      type: object
+                    source:
+                      nullable: true
+                      type: string
+                  required:
+                  - action
+                  type: object
+                type: array
+              importV4:
+                items:
+                  description: |-
+                    A single IPv4 BGP filter rule (representative subset of upstream's
+                    `BGPFilterRuleV4`).
+                  properties:
+                    action:
+                      description: |-
+                        Terminal action for a BGP filter rule. Wire values match upstream:
+                        `Accept` / `Reject`.
+                      enum:
+                      - Accept
+                      - Reject
+                      type: string
+                    cidr:
+                      nullable: true
+                      type: string
+                    interface:
+                      nullable: true
+                      type: string
+                    matchOperator:
+                      description: |-
+                        How a BGP filter rule's `cidr` match is applied. Wire values match
+                        upstream: `Equal` / `NotEqual` / `In` / `NotIn`.
+                      enum:
+                      - Equal
+                      - NotEqual
+                      - In
+                      - NotIn
+                      - null
+                      nullable: true
+                      type: string
+                    prefixLength:
+                      description: |-
+                        Restricts the range of prefix lengths a `cidr` match applies to. Shared
+                        shape between the V4 and V6 rule variants (upstream models these as two
+                        distinct but structurally identical types).
+                      nullable: true
+                      properties:
+                        max:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        min:
+                          format: int32
+                          nullable: true
+                          type: integer
+                      type: object
+                    source:
+                      nullable: true
+                      type: string
+                  required:
+                  - action
+                  type: object
+                type: array
+              importV6:
+                items:
+                  description: |-
+                    A single IPv6 BGP filter rule (representative subset of upstream's
+                    `BGPFilterRuleV6`).
+                  properties:
+                    action:
+                      description: |-
+                        Terminal action for a BGP filter rule. Wire values match upstream:
+                        `Accept` / `Reject`.
+                      enum:
+                      - Accept
+                      - Reject
+                      type: string
+                    cidr:
+                      nullable: true
+                      type: string
+                    interface:
+                      nullable: true
+                      type: string
+                    matchOperator:
+                      description: |-
+                        How a BGP filter rule's `cidr` match is applied. Wire values match
+                        upstream: `Equal` / `NotEqual` / `In` / `NotIn`.
+                      enum:
+                      - Equal
+                      - NotEqual
+                      - In
+                      - NotIn
+                      - null
+                      nullable: true
+                      type: string
+                    prefixLength:
+                      description: |-
+                        Restricts the range of prefix lengths a `cidr` match applies to. Shared
+                        shape between the V4 and V6 rule variants (upstream models these as two
+                        distinct but structurally identical types).
+                      nullable: true
+                      properties:
+                        max:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        min:
+                          format: int32
+                          nullable: true
+                          type: integer
+                      type: object
+                    source:
+                      nullable: true
+                      type: string
+                  required:
+                  - action
+                  type: object
+                type: array
+            type: object
+        required:
+        - spec
+        title: BGPFilter
+        type: object
+    served: true
+    storage: true
+    subresources: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: kubecontrollersconfigurations.crd.projectcalico.org
+spec:
+  group: crd.projectcalico.org
+  names:
+    categories: []
+    kind: KubeControllersConfiguration
+    plural: kubecontrollersconfigurations
+    shortNames: []
+    singular: kubecontrollersconfiguration
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for KubeControllersConfigurationSpec via `CustomResource`
+        properties:
+          spec:
+            description: |-
+              Spec for the singleton `KubeControllersConfiguration` resource
+              (representative subset of the kube-controllers configuration).
+            properties:
+              controllers:
+                default: {}
+                description: |-
+                  Enables and configures individual kube-controllers (representative
+                  subset of upstream's `ControllersConfig`; only the node controller is
+                  modeled today, extended as the controllers grow).
+                properties:
+                  node:
+                    description: |-
+                      Configuration for the node controller (representative subset of
+                      upstream's `NodeControllerConfig`).
+                    nullable: true
+                    properties:
+                      reconcilerPeriod:
+                        nullable: true
+                        type: string
+                    type: object
+                type: object
+              healthChecks:
+                nullable: true
+                type: string
+              logSeverityScreen:
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: KubeControllersConfiguration
+        type: object
+    served: true
+    storage: true
+    subresources: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: caliconodestatuses.crd.projectcalico.org
+spec:
+  group: crd.projectcalico.org
+  names:
+    categories: []
+    kind: CalicoNodeStatus
+    plural: caliconodestatuses
+    shortNames: []
+    singular: caliconodestatus
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for CalicoNodeStatusSpec via `CustomResource`
+        properties:
+          spec:
+            description: |-
+              Spec for the cluster-scoped `CalicoNodeStatus` resource — requests
+              on-demand status reporting for a single Calico node.
+            properties:
+              classes:
+                items:
+                  description: |-
+                    The types of information a `CalicoNodeStatus` monitors. Wire values
+                    match upstream: `Agent` / `BGP` / `Routes`.
+                  enum:
+                  - Agent
+                  - BGP
+                  - Routes
+                  type: string
+                type: array
+              node:
+                type: string
+              updatePeriodSeconds:
+                format: uint32
+                minimum: 0.0
+                nullable: true
+                type: integer
+            type: object
+        required:
+        - spec
+        title: CalicoNodeStatus
+        type: object
+    served: true
+    storage: true
+    subresources: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: nodes.crd.projectcalico.org
+spec:
+  group: crd.projectcalico.org
+  names:
+    categories: []
+    kind: Node
+    plural: nodes
+    shortNames: []
+    singular: node
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for NodeSpec via `CustomResource`
+        properties:
+          spec:
+            description: |-
+              Spec for the cluster-scoped Calico `Node` resource. Deriving
+              [`CustomResource`] generates the `nodes.crd.projectcalico.org` root type.
+            properties:
+              bgp:
+                description: BGP configuration for this node.
+                nullable: true
+                properties:
+                  asNumber:
+                    description: AS number of this node; falls back to the global default when unset.
+                    format: uint32
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  ipv4Address:
+                    description: IPv4 address (and optional network) of this node. `ipv4Address`.
+                    nullable: true
+                    type: string
+                  ipv4IPIPTunnelAddr:
+                    description: IPv4 address of the IP-in-IP tunnel. `ipv4IPIPTunnelAddr`.
+                    nullable: true
+                    type: string
+                  ipv6Address:
+                    description: IPv6 address (and optional network) of this node. `ipv6Address`.
+                    nullable: true
+                    type: string
+                type: object
+              ipv4VXLANTunnelAddr:
+                description: IPv4 address of the VXLAN tunnel. `ipv4VXLANTunnelAddr`.
+                nullable: true
+                type: string
+              ipv6VXLANTunnelAddr:
+                description: IPv6 address of the VXLAN tunnel. `ipv6VXLANTunnelAddr`.
+                nullable: true
+                type: string
+              orchRefs:
+                description: Orchestrator references for this node. `orchRefs`.
+                items:
+                  description: A reference back to the orchestrator's node identity.
+                  properties:
+                    nodeName:
+                      description: Name of this node according to the orchestrator. `nodeName`.
+                      nullable: true
+                      type: string
+                    orchestrator:
+                      description: The orchestrator using this node (e.g. `k8s`).
+                      type: string
+                  required:
+                  - orchestrator
+                  type: object
+                type: array
+            type: object
+        required:
+        - spec
+        title: Node
+        type: object
+    served: true
+    storage: true
+    subresources: {}
