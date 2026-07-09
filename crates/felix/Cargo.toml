@@ -9,6 +9,7 @@ workspace = true
 
 [dependencies]
 apis = { version = "0.1.0", path = "../apis" }
+async-trait = "0.1.89"
 base64 = "0.22.1"
 calc = { version = "0.1.0", path = "../calc" }
 datastore = { version = "0.1.0", path = "../datastore" }

@@ -68,6 +68,15 @@ impl From<&str> for DataplaneError {
 ///
 /// Mirrors upstream's `Manager` interface. Managers ignore messages they don't
 /// care about (self-filtering).
+///
+/// `complete_deferred_work` is `async` because reconciliation programs the kernel
+/// over async I/O (`rtnetlink`, kube-backed managers, …). `on_update` stays
+/// synchronous and cheap — it only mutates in-memory desired state and must never
+/// touch the kernel or block. The trait uses [`async_trait`] with `?Send`: the
+/// pure core drives managers on a single-threaded (current-thread) runtime, so it
+/// does not require `Send` futures, which also keeps the non-`Send` unit-test
+/// mocks (`Rc<RefCell<_>>`) valid.
+#[async_trait::async_trait(?Send)]
 pub trait Manager {
     /// Absorb one calc-graph message into this manager's *desired* state. Cheap;
     /// must not touch the kernel. Called for every message — managers self-filter.
@@ -76,7 +85,7 @@ pub trait Manager {
     /// Reconcile desired state to the dataplane (program the kernel). Called by the
     /// apply loop after a coalesced batch of updates. Returns `Err` to trigger a
     /// retry (the desired state is preserved). Must be idempotent.
-    fn complete_deferred_work(&mut self) -> Result<(), DataplaneError>;
+    async fn complete_deferred_work(&mut self) -> Result<(), DataplaneError>;
 }
 
 /// Outcome of one [`InternalDataplane::apply_all`] round.
@@ -211,9 +220,11 @@ impl DataplaneState {
 
 /// The felix `InternalDataplane`: the concrete [`DataplaneSink`] for the node.
 ///
-/// Holds the registered managers and the pure throttle [`DataplaneState`]. All
-/// methods are synchronous and clock-free (time is injected) so the whole
-/// framework is unit-testable; the async [`run`] driver is a thin wrapper.
+/// Holds the registered managers and the pure throttle [`DataplaneState`]. The
+/// throttle/dispatch bookkeeping is clock-free (time is injected) so the whole
+/// framework is deterministically unit-testable; only [`apply_all`](Self::apply_all)
+/// is `async` (it awaits each manager's kernel programming). The async [`run`]
+/// driver is a thin wrapper.
 #[derive(Default)]
 pub struct InternalDataplane {
     managers: Vec<Box<dyn Manager>>,
@@ -277,13 +288,13 @@ impl InternalDataplane {
     /// every manager (registration order), collecting failures. Any failure leaves
     /// the dataplane dirty for a retry; a fully-clean round after `InSync` reports
     /// readiness once.
-    pub fn apply_all(&mut self, now: u64) -> ApplyOutcome {
+    pub async fn apply_all(&mut self, now: u64) -> ApplyOutcome {
         // Clear the dirty flag up front; a failing manager re-sets it via
         // `end_apply`, so pending work is never dropped.
         self.state.begin_apply();
         let mut errors = Vec::new();
         for (idx, manager) in self.managers.iter_mut().enumerate() {
-            if let Err(err) = manager.complete_deferred_work() {
+            if let Err(err) = manager.complete_deferred_work().await {
                 errors.push((idx, err));
             }
         }
@@ -344,7 +355,7 @@ pub async fn run(
         // Inject "now" as the number of throttle intervals elapsed since start.
         let now = (start.elapsed().as_millis() / THROTTLE_INTERVAL.as_millis()) as u64;
         if dataplane.should_apply(now) {
-            let outcome = dataplane.apply_all(now);
+            let outcome = dataplane.apply_all(now).await;
             for (idx, err) in &outcome.errors {
                 tracing::warn!(manager = idx, %err, "manager failed to apply; will retry");
             }
@@ -399,6 +410,7 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait(?Send)]
     impl Manager for MockManager {
         fn on_update(&mut self, msg: &ToDataplane) {
             if (self.filter)(msg) {
@@ -406,7 +418,7 @@ mod tests {
             }
         }
 
-        fn complete_deferred_work(&mut self) -> Result<(), DataplaneError> {
+        async fn complete_deferred_work(&mut self) -> Result<(), DataplaneError> {
             let mut r = self.rec.borrow_mut();
             r.apply_calls += 1;
             if r.fail_next > 0 {
@@ -458,8 +470,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn burst_coalesces_to_single_apply() {
+    #[tokio::test]
+    async fn burst_coalesces_to_single_apply() {
         let mut dp = InternalDataplane::with_throttle(1);
         let (m, h) = MockManager::new(accept_all);
         dp.add_manager(Box::new(m));
@@ -472,7 +484,7 @@ mod tests {
 
         // One apply round at tick 0.
         assert!(dp.should_apply(0));
-        dp.apply_all(0);
+        dp.apply_all(0).await;
 
         assert_eq!(
             h.borrow().apply_calls,
@@ -486,8 +498,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn insync_forces_apply_and_reports_readiness() {
+    #[tokio::test]
+    async fn insync_forces_apply_and_reports_readiness() {
         // Throttle interval large so a normal apply would be blocked at tick 0
         // after a prior apply — InSync must still force one.
         let mut dp = InternalDataplane::with_throttle(100);
@@ -495,7 +507,7 @@ mod tests {
         dp.add_manager(Box::new(m));
 
         dp.dispatch(&ipset_msg("s1"));
-        dp.apply_all(0); // consumes the first slot; next_eligible now = 100
+        dp.apply_all(0).await; // consumes the first slot; next_eligible now = 100
         assert!(!dp.is_ready());
 
         // Not in sync yet, throttled within the interval.
@@ -507,7 +519,7 @@ mod tests {
             dp.should_apply(1),
             "InSync forces an apply despite throttle"
         );
-        let outcome = dp.apply_all(1);
+        let outcome = dp.apply_all(1).await;
         assert!(
             outcome.became_ready,
             "clean apply after InSync reports ready"
@@ -517,12 +529,12 @@ mod tests {
         // Readiness is reported exactly once.
         dp.dispatch(&ipset_msg("s3"));
         dp.dispatch(&ToDataplane::InSync);
-        let outcome2 = dp.apply_all(2);
+        let outcome2 = dp.apply_all(2).await;
         assert!(!outcome2.became_ready, "readiness reported only once");
     }
 
-    #[test]
-    fn failed_manager_is_retried_without_state_loss_then_stops() {
+    #[tokio::test]
+    async fn failed_manager_is_retried_without_state_loss_then_stops() {
         let mut dp = InternalDataplane::with_throttle(1);
         let (m, h) = MockManager::new(accept_all);
         h.borrow_mut().fail_next = 1; // fail the first apply, succeed afterwards
@@ -532,7 +544,7 @@ mod tests {
 
         // First round: manager fails.
         assert!(dp.should_apply(0));
-        let o0 = dp.apply_all(0);
+        let o0 = dp.apply_all(0).await;
         assert!(!o0.is_clean(), "manager failed this round");
         assert!(
             dp.needs_apply(),
@@ -542,7 +554,7 @@ mod tests {
 
         // Retry on a later tick: manager now succeeds.
         assert!(dp.should_apply(5), "retry is scheduled after backoff");
-        let o1 = dp.apply_all(5);
+        let o1 = dp.apply_all(5).await;
         assert!(o1.is_clean(), "retry succeeds");
         assert!(!dp.needs_apply(), "clean retry clears dirty");
         assert_eq!(h.borrow().apply_calls, 2, "one fail + one success");

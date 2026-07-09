@@ -676,6 +676,7 @@ name = "felix"
 version = "0.1.0"
 dependencies = [
  "apis",
+ "async-trait",
  "base64",
  "calc",
  "datastore",
