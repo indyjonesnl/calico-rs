@@ -34,6 +34,12 @@ impl<V: Clone> MemStore<V> {
         self.entries.is_empty()
     }
 
+    /// The last-assigned revision (a snapshot "resourceVersion" for the whole
+    /// store); `0` before any write.
+    pub fn revision(&self) -> Revision {
+        self.next_revision.saturating_sub(1)
+    }
+
     fn bump(&mut self) -> Revision {
         let r = self.next_revision;
         self.next_revision += 1;

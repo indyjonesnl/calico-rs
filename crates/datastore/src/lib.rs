@@ -10,12 +10,14 @@
 //! logic (e.g. IPAM's two-phase affinity claim) without a live cluster. CAS on
 //! a monotonic revision is the invariant the whole datastore is built around.
 
+mod backend;
 mod cas;
 mod kdd;
 mod mem;
 mod model;
 mod syncer;
 
+pub use backend::{key_to_target, Backend, DsError, KVPairList, ListOptions, MemBackend, WatchEvent};
 pub use cas::{CasError, CasStore, Revision, Versioned};
 pub use kdd::{KddBackend, KddValue};
 pub use mem::MemStore;
