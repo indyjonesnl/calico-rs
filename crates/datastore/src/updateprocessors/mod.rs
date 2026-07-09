@@ -24,14 +24,8 @@ use apis::{
     Protocol, Rule, WorkloadEndpointSpec,
 };
 
+use crate::conversion::{LABEL_NAMESPACE, LABEL_SERVICE_ACCOUNT};
 use crate::model::{Key, ResourceKind};
-
-/// The label key Felix uses to scope endpoints to a namespace. Matches upstream
-/// `apiv3.LabelNamespace` (`projectcalico.org/namespace`).
-pub const LABEL_NAMESPACE: &str = "projectcalico.org/namespace";
-/// The label key carrying a workload's service account. Matches upstream
-/// `apiv3.LabelServiceAccount`.
-pub const LABEL_SERVICE_ACCOUNT: &str = "projectcalico.org/serviceaccount";
 
 /// Error from converting a v3 resource to the v1 backend model.
 #[derive(Debug, Clone, PartialEq, Eq)]

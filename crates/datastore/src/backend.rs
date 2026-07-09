@@ -317,6 +317,23 @@ impl Backend for MemBackend {
     }
 }
 
+/// Validate a caller-supplied revision for a CAS `update`: require `Some` and
+/// non-zero.
+///
+/// A revision of `0` only ever arises from a failed parse of the raw K8s
+/// `resourceVersion` (see `kdd.rs`'s `unwrap_or(0)` fallback), never from a
+/// real `resourceVersion`. Kubernetes treats `resourceVersion: "0"` as "match
+/// any" for reads, so silently sending it on to [`KddBackend::update`] would
+/// defeat the CAS instead of failing loudly — reject it explicitly here.
+fn require_nonzero_revision(revision: Option<Revision>) -> Result<Revision, DsError> {
+    match revision {
+        None | Some(0) => Err(DsError::Datastore(
+            "update requires a valid non-zero revision for CAS".into(),
+        )),
+        Some(rev) => Ok(rev),
+    }
+}
+
 // ---- KDD backend ----------------------------------------------------------
 
 #[async_trait::async_trait]
@@ -329,9 +346,7 @@ impl Backend for KddBackend {
 
     async fn update(&self, kv: KVPair<Value>) -> Result<KVPair<Value>, DsError> {
         let (kind, ns, name) = key_to_target(&kv.key);
-        let rev = kv
-            .revision
-            .ok_or_else(|| DsError::Datastore("update requires a revision".into()))?;
+        let rev = require_nonzero_revision(kv.revision)?;
         // Numeric Revision → raw resourceVersion string: for CRDs the K8s
         // resourceVersion *is* a numeric string, and `to_value` obtains the
         // numeric revision by parsing it, so `rev.to_string()` reconstructs the
@@ -461,6 +476,23 @@ mod tests {
     #[allow(dead_code)]
     fn _assert_kdd_is_backend(b: &KddBackend) -> &dyn Backend {
         b
+    }
+
+    #[test]
+    fn require_nonzero_revision_rejects_none_and_zero() {
+        assert_eq!(
+            require_nonzero_revision(None).unwrap_err(),
+            DsError::Datastore("update requires a valid non-zero revision for CAS".into())
+        );
+        assert_eq!(
+            require_nonzero_revision(Some(0)).unwrap_err(),
+            DsError::Datastore("update requires a valid non-zero revision for CAS".into())
+        );
+    }
+
+    #[test]
+    fn require_nonzero_revision_accepts_nonzero() {
+        assert_eq!(require_nonzero_revision(Some(42)).unwrap(), 42);
     }
 
     fn res_key(kind: ResourceKind, ns: Option<&str>, name: &str) -> Key {

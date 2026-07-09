@@ -81,11 +81,17 @@ pub fn workload_endpoint_name(node: &str, pod: &str, endpoint: &str) -> String {
 /// Deterministic host-side veth name for a workload, matching upstream
 /// `VethNameForWorkload`: `cali` + first 11 hex chars of `sha1("<ns>.<pod>")`.
 ///
-/// This is intentionally a byte-for-byte replica of `cni::veth_name_for_workload`
-/// (the CNI plugin owns the canonical copy). Datastore cannot depend on `cni`
+/// This replicates only the **default-prefix** (`cali`) path of
+/// `cni::veth_name_for_workload`, which additionally takes a `prefix` param
+/// (empty → `cali`, comma-list → first entry) sourced from
+/// `FelixConfigurationSpec.interface_prefix`. Datastore cannot depend on `cni`
 /// (which already depends on `datastore`, so a dep would form a cycle), so the
-/// algorithm is duplicated here and pinned to the same reference vectors by
-/// [`tests::veth_name_matches_cni_reference_vectors`].
+/// default-prefix algorithm is duplicated here and pinned to the same
+/// reference vectors by [`tests::veth_name_matches_cni_reference_vectors`].
+/// A cluster configured with a non-default `interfacePrefix` will diverge from
+/// this function's output — the P3 felix/cni consumer of this projection must
+/// thread the configured prefix through (e.g. by adding a `prefix` parameter
+/// here) rather than relying on this hardcoded `cali` default.
 pub fn veth_name_for_workload(namespace: &str, pod: &str) -> String {
     let mut hasher = Sha1::new();
     hasher.update(format!("{namespace}.{pod}").as_bytes());
@@ -395,7 +401,10 @@ mod tests {
 
     #[test]
     fn veth_name_matches_cni_reference_vectors() {
-        // Must stay byte-identical to cni::veth_name_for_workload's pinned vectors.
+        // Pins only the default-prefix ("cali") vectors: must stay byte-identical
+        // to cni::veth_name_for_workload's default-prefix pinned vectors. A
+        // non-default `interfacePrefix` is out of scope for this replica (see
+        // the doc comment on veth_name_for_workload above).
         assert_eq!(
             veth_name_for_workload("default", "nginx"),
             "calic440f455693"
