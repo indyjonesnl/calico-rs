@@ -28,6 +28,12 @@ pub fn crd_yaml() -> String {
         crate::BGPConfiguration::crd(),
         crate::BGPPeer::crd(),
         crate::FelixConfiguration::crd(),
+        crate::StagedNetworkPolicy::crd(),
+        crate::StagedGlobalNetworkPolicy::crd(),
+        crate::StagedKubernetesNetworkPolicy::crd(),
+        crate::BGPFilter::crd(),
+        crate::KubeControllersConfiguration::crd(),
+        crate::CalicoNodeStatus::crd(),
     ];
     docs.iter()
         .map(|c| serde_yaml_ng::to_string(c).expect("CRD serializes to YAML"))
@@ -59,6 +65,21 @@ mod tests {
         assert_eq!(crate::NetworkPolicy::crd().spec.scope, "Namespaced");
         assert_eq!(crate::GlobalNetworkPolicy::crd().spec.scope, "Cluster");
         assert_eq!(crate::ClusterInformation::crd().spec.scope, "Cluster");
+        assert_eq!(crate::StagedNetworkPolicy::crd().spec.scope, "Namespaced");
+        assert_eq!(
+            crate::StagedGlobalNetworkPolicy::crd().spec.scope,
+            "Cluster"
+        );
+        assert_eq!(
+            crate::StagedKubernetesNetworkPolicy::crd().spec.scope,
+            "Namespaced"
+        );
+        assert_eq!(crate::BGPFilter::crd().spec.scope, "Cluster");
+        assert_eq!(
+            crate::KubeControllersConfiguration::crd().spec.scope,
+            "Cluster"
+        );
+        assert_eq!(crate::CalicoNodeStatus::crd().spec.scope, "Cluster");
     }
 
     #[test]
@@ -71,5 +92,17 @@ mod tests {
         // The generated OpenAPI schema carries our camelCase spec fields.
         assert!(yaml.contains("vxlanMode"));
         assert!(yaml.contains("natOutgoing"));
+    }
+
+    #[test]
+    fn new_p2_kinds_are_registered() {
+        let yaml = crd_yaml();
+        assert!(yaml.contains("name: stagednetworkpolicies.crd.projectcalico.org"));
+        assert!(yaml.contains("name: stagedglobalnetworkpolicies.crd.projectcalico.org"));
+        assert!(yaml.contains("name: stagedkubernetesnetworkpolicies.crd.projectcalico.org"));
+        assert!(yaml.contains("name: bgpfilters.crd.projectcalico.org"));
+        assert!(yaml.contains("name: kubecontrollersconfigurations.crd.projectcalico.org"));
+        assert!(yaml.contains("name: caliconodestatuses.crd.projectcalico.org"));
+        assert!(yaml.contains("stagedAction"));
     }
 }

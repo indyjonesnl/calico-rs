@@ -171,6 +171,113 @@ pub struct ProfileSpec {
     pub labels_to_apply: std::collections::BTreeMap<String, String>,
 }
 
+/// The action a staged policy would take if promoted to its enforced
+/// counterpart. Wire values match upstream: `Set` / `Delete` / `Learn` /
+/// `Ignore`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum StagedAction {
+    #[default]
+    Set,
+    Delete,
+    Learn,
+    Ignore,
+}
+
+/// Spec for the namespaced `StagedNetworkPolicy` resource — a dry-run
+/// counterpart of [`NetworkPolicy`] used to preview policy changes without
+/// enforcing them. Mirrors [`NetworkPolicySpec`] plus `stagedAction`.
+#[derive(CustomResource, Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[kube(
+    group = "crd.projectcalico.org",
+    version = "v1",
+    kind = "StagedNetworkPolicy",
+    plural = "stagednetworkpolicies",
+    singular = "stagednetworkpolicy",
+    namespaced
+)]
+#[serde(rename_all = "camelCase")]
+pub struct StagedNetworkPolicySpec {
+    #[serde(default)]
+    pub staged_action: StagedAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<f64>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub selector: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub types: Vec<PolicyType>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ingress: Vec<Rule>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub egress: Vec<Rule>,
+}
+
+/// Spec for the cluster-scoped `StagedGlobalNetworkPolicy` resource. Mirrors
+/// [`GlobalNetworkPolicySpec`] plus `stagedAction`.
+#[derive(CustomResource, Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[kube(
+    group = "crd.projectcalico.org",
+    version = "v1",
+    kind = "StagedGlobalNetworkPolicy",
+    plural = "stagedglobalnetworkpolicies",
+    singular = "stagedglobalnetworkpolicy"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct StagedGlobalNetworkPolicySpec {
+    #[serde(default)]
+    pub staged_action: StagedAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<f64>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub selector: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub namespace_selector: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub types: Vec<PolicyType>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ingress: Vec<Rule>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub egress: Vec<Rule>,
+    #[serde(default)]
+    pub apply_on_forward: bool,
+    #[serde(default)]
+    pub do_not_track: bool,
+    #[serde(rename = "preDNAT", default)]
+    pub pre_dnat: bool,
+}
+
+/// Spec for the namespaced `StagedKubernetesNetworkPolicy` resource — a
+/// staged counterpart of a native Kubernetes `NetworkPolicy`. The
+/// pod-selector/ingress/egress/policy-types fields reuse the upstream
+/// Kubernetes wire types (`k8s_openapi::api::networking::v1`) directly rather
+/// than reproducing them; this also gets `NetworkPolicyPort::port`'s
+/// hand-written int-or-string `JsonSchema` for free.
+#[derive(CustomResource, Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[kube(
+    group = "crd.projectcalico.org",
+    version = "v1",
+    kind = "StagedKubernetesNetworkPolicy",
+    plural = "stagedkubernetesnetworkpolicies",
+    singular = "stagedkubernetesnetworkpolicy",
+    namespaced
+)]
+#[serde(rename_all = "camelCase")]
+pub struct StagedKubernetesNetworkPolicySpec {
+    #[serde(default)]
+    pub staged_action: StagedAction,
+    #[serde(default)]
+    pub pod_selector: k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ingress: Vec<k8s_openapi::api::networking::v1::NetworkPolicyIngressRule>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub egress: Vec<k8s_openapi::api::networking::v1::NetworkPolicyEgressRule>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub policy_types: Vec<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,5 +354,94 @@ mod tests {
         assert_eq!(spec.types, vec![PolicyType::Ingress]);
         assert_eq!(spec.ingress.len(), 1);
         assert_eq!(spec.ingress[0].action, Action::Allow);
+    }
+
+    #[test]
+    fn staged_action_defaults_to_set_and_roundtrips() {
+        let spec: StagedNetworkPolicySpec = serde_json::from_str("{}").unwrap();
+        assert_eq!(spec.staged_action, StagedAction::Set);
+        let json = serde_json::to_string(&spec).unwrap();
+        assert!(json.contains("\"stagedAction\":\"Set\""));
+
+        let spec = StagedNetworkPolicySpec {
+            staged_action: StagedAction::Delete,
+            selector: "app == 'db'".into(),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&spec).unwrap();
+        assert!(json.contains("\"stagedAction\":\"Delete\""));
+        let round: StagedNetworkPolicySpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(round, spec);
+    }
+
+    #[test]
+    fn staged_network_policy_mirrors_network_policy_fields() {
+        let doc = r#"{
+            "stagedAction": "Learn",
+            "tier": "security",
+            "order": 100.0,
+            "selector": "app == 'db'",
+            "types": ["Ingress"],
+            "ingress": [
+                {"action":"Allow","protocol":"TCP",
+                 "destination":{"ports":[5432]}}
+            ]
+        }"#;
+        let spec: StagedNetworkPolicySpec = serde_json::from_str(doc).unwrap();
+        assert_eq!(spec.staged_action, StagedAction::Learn);
+        assert_eq!(spec.tier.as_deref(), Some("security"));
+        assert_eq!(spec.ingress.len(), 1);
+    }
+
+    #[test]
+    fn staged_global_network_policy_predanat_and_staged_action() {
+        let spec = StagedGlobalNetworkPolicySpec {
+            staged_action: StagedAction::Ignore,
+            selector: "all()".into(),
+            pre_dnat: true,
+            apply_on_forward: true,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&spec).unwrap();
+        assert!(json.contains("\"stagedAction\":\"Ignore\""));
+        assert!(json.contains("\"preDNAT\":true"));
+        assert!(json.contains("\"applyOnForward\":true"));
+        let round: StagedGlobalNetworkPolicySpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(round, spec);
+    }
+
+    #[test]
+    fn staged_kubernetes_network_policy_roundtrips_and_reuses_k8s_types() {
+        let doc = r#"{
+            "stagedAction": "Delete",
+            "podSelector": {"matchLabels": {"app": "web"}},
+            "ingress": [{
+                "ports": [{"protocol": "TCP", "port": 80}],
+                "from": [{"podSelector": {}}]
+            }],
+            "policyTypes": ["Ingress"]
+        }"#;
+        let spec: StagedKubernetesNetworkPolicySpec = serde_json::from_str(doc).unwrap();
+        assert_eq!(spec.staged_action, StagedAction::Delete);
+        assert_eq!(spec.policy_types, vec!["Ingress".to_string()]);
+        assert_eq!(spec.ingress.len(), 1);
+        let json = serde_json::to_string(&spec).unwrap();
+        assert!(json.contains("\"podSelector\""));
+        assert!(json.contains("\"stagedAction\":\"Delete\""));
+        let round: StagedKubernetesNetworkPolicySpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(round, spec);
+    }
+
+    #[test]
+    fn staged_kubernetes_network_policy_port_is_int_or_string() {
+        // The reused k8s NetworkPolicyPort.port field must accept both numeric
+        // and named ports (Kubernetes int-or-string), matching upstream.
+        let named = r#"{"podSelector":{},"ingress":[{"ports":[{"port":"http"}]}]}"#;
+        let spec: StagedKubernetesNetworkPolicySpec = serde_json::from_str(named).unwrap();
+        assert_eq!(spec.ingress.len(), 1);
+
+        let numeric = r#"{"podSelector":{},"ingress":[{"ports":[{"port":80}]}]}"#;
+        let spec: StagedKubernetesNetworkPolicySpec = serde_json::from_str(numeric).unwrap();
+        assert_eq!(spec.ingress.len(), 1);
     }
 }

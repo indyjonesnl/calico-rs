@@ -6,10 +6,12 @@
 //! unchanged). Kubernetes CRD derivation (`kube::CustomResource`) and the v3↔v1
 //! backend-model conversion layer are added on top (tasks T013, T020).
 //!
-//! Implemented kinds (P1/P2-central subset): IPPool, WorkloadEndpoint,
-//! NetworkPolicy, GlobalNetworkPolicy, Tier, Profile, ClusterInformation. The
-//! remaining kinds (HostEndpoint, NetworkSet, BGP*, FelixConfiguration, …) follow
-//! the same pattern.
+//! Implemented kinds: IPPool, WorkloadEndpoint, HostEndpoint, NetworkPolicy,
+//! GlobalNetworkPolicy, StagedNetworkPolicy, StagedGlobalNetworkPolicy,
+//! StagedKubernetesNetworkPolicy, Tier, Profile, NetworkSet, GlobalNetworkSet,
+//! ClusterInformation, FelixConfiguration, BGPConfiguration, BGPPeer,
+//! BGPFilter, KubeControllersConfiguration, CalicoNodeStatus, and the IPAM
+//! kinds — this is the full P1/P2 resource model (T010, T013).
 
 mod bgp;
 mod common;
@@ -19,10 +21,16 @@ mod ipam;
 mod networking;
 mod policy;
 
-pub use bgp::{BGPConfiguration, BGPPeer, BgpConfigurationSpec, BgpPeerSpec};
+pub use bgp::{
+    BGPConfiguration, BGPFilter, BGPPeer, BgpConfigurationSpec, BgpFilterAction,
+    BgpFilterMatchOperator, BgpFilterPrefixLength, BgpFilterRuleV4, BgpFilterRuleV6, BgpFilterSpec,
+    BgpPeerSpec,
+};
 pub use common::Metadata;
 pub use config::{
-    ClusterInformation, ClusterInformationSpec, FelixConfiguration, FelixConfigurationSpec,
+    CalicoNodeStatus, CalicoNodeStatusSpec, ClusterInformation, ClusterInformationSpec,
+    ControllersConfig, FelixConfiguration, FelixConfigurationSpec, KubeControllersConfiguration,
+    KubeControllersConfigurationSpec, NodeControllerConfig, NodeStatusClassType,
 };
 pub use ipam::{
     AllocationAttributeSpec, BlockAffinity, BlockAffinitySpec, IPAMBlock, IPAMConfiguration,
@@ -35,5 +43,8 @@ pub use networking::{
 };
 pub use policy::{
     Action, EntityRule, GlobalNetworkPolicy, GlobalNetworkPolicySpec, NetworkPolicy,
-    NetworkPolicySpec, PolicyType, Profile, ProfileSpec, Protocol, Rule, Tier, TierSpec,
+    NetworkPolicySpec, PolicyType, Profile, ProfileSpec, Protocol, Rule, StagedAction,
+    StagedGlobalNetworkPolicy, StagedGlobalNetworkPolicySpec, StagedKubernetesNetworkPolicy,
+    StagedKubernetesNetworkPolicySpec, StagedNetworkPolicy, StagedNetworkPolicySpec, Tier,
+    TierSpec,
 };
