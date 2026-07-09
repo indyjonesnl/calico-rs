@@ -8,3 +8,9 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "net", "time", "io-util"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "io-util"] }
