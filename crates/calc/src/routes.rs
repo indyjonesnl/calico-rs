@@ -49,16 +49,6 @@ pub struct WorkloadInfo {
     pub iface: String,
 }
 
-/// An allocatable IP pool. Carried for parity with upstream's calc inputs and
-/// to fix the resolver's signature for T045, which will attach pool-derived
-/// encapsulation / NAT-outgoing / cross-subnet metadata to routes. Pools do not
-/// contribute a standalone forwarding route in this (encap-agnostic) increment.
-#[derive(Debug, Clone)]
-pub struct PoolInfo {
-    /// Pool CIDR.
-    pub cidr: String,
-}
-
 /// An IPAM block's affinity: which node owns which block CIDR. Remote blocks
 /// yield one aggregated route per CIDR (the scale win over per-/32); the local
 /// node's block yields a `LocalWorkload` aggregate.
@@ -101,15 +91,7 @@ impl RouteResolver {
     /// block aggregates are both emitted (deduped). They carry distinct CIDRs,
     /// so nothing is dropped here; the dataplane RIB/LPM picks the
     /// longest-prefix match at forwarding time.
-    ///
-    /// `pools` is accepted for input parity with upstream (see [`PoolInfo`]) but
-    /// does not contribute a route in this encap-agnostic increment.
-    pub fn resolve_all(
-        &self,
-        workloads: &[WorkloadInfo],
-        blocks: &[BlockInfo],
-        _pools: &[PoolInfo],
-    ) -> Vec<Route> {
+    pub fn resolve_all(&self, workloads: &[WorkloadInfo], blocks: &[BlockInfo]) -> Vec<Route> {
         let mut routes = Vec::new();
         self.push_workload_routes(workloads, &mut routes);
         self.push_host_routes(&mut routes);
@@ -319,7 +301,7 @@ mod tests {
             "node-1",
             node_ips(&[("node-1", "192.168.0.1"), ("node-2", "192.168.0.2")]),
         );
-        let routes = r.resolve_all(&[], &[], &[]);
+        let routes = r.resolve_all(&[], &[]);
 
         // Remote host route to node-2's address, via node-2.
         let remote = routes
@@ -345,7 +327,7 @@ mod tests {
     #[test]
     fn remote_block_becomes_one_aggregated_route_via_owning_node() {
         let r = RouteResolver::new("node-1", node_ips(&[("node-2", "192.168.0.2")]));
-        let routes = r.resolve_all(&[], &[block("10.0.1.0/26", "node-2")], &[]);
+        let routes = r.resolve_all(&[], &[block("10.0.1.0/26", "node-2")]);
 
         let agg: Vec<_> = routes.iter().filter(|r| r.dst == "10.0.1.0/26").collect();
         assert_eq!(agg.len(), 1, "one aggregated route, not per-/32");
@@ -357,7 +339,7 @@ mod tests {
     #[test]
     fn remote_block_with_unknown_node_is_skipped() {
         let r = RouteResolver::new("node-1", node_ips(&[]));
-        let routes = r.resolve_all(&[], &[block("10.0.9.0/26", "node-9")], &[]);
+        let routes = r.resolve_all(&[], &[block("10.0.9.0/26", "node-9")]);
         assert!(routes.is_empty(), "no next hop known → no block route");
     }
 
@@ -366,7 +348,7 @@ mod tests {
         // Upstream calc emits the local block-via-host route as LOCAL_WORKLOAD;
         // the blackhole for local blocks is a dataplane concern, not calc's.
         let r = RouteResolver::new("node-1", node_ips(&[("node-1", "192.168.0.1")]));
-        let routes = r.resolve_all(&[], &[block("10.0.0.0/26", "node-1")], &[]);
+        let routes = r.resolve_all(&[], &[block("10.0.0.0/26", "node-1")]);
 
         let agg = routes
             .iter()
@@ -386,7 +368,6 @@ mod tests {
         let routes = r.resolve_all(
             &[wep("node-1", "10.0.0.5", "cali123")],
             &[block("10.0.0.0/26", "node-1")],
-            &[],
         );
 
         let veth = routes
@@ -402,25 +383,6 @@ mod tests {
             .expect("block aggregate present");
         assert_eq!(agg.route_type, RouteType::LocalWorkload);
         // Both are emitted; the dataplane RIB/LPM picks longest-prefix.
-    }
-
-    // --- pools do not (yet) contribute a route ------------------------------
-
-    #[test]
-    fn pools_do_not_change_the_route_set() {
-        // Pool metadata (encap type / NAT-outgoing / cross-subnet) and the
-        // local-block blackhole are T045/dataplane concerns, so pools emit no
-        // forwarding route in this calc increment.
-        let r = RouteResolver::new("node-1", node_ips(&[("node-2", "192.168.0.2")]));
-        let without = r.resolve_all(&[], &[block("10.0.1.0/26", "node-2")], &[]);
-        let with = r.resolve_all(
-            &[],
-            &[block("10.0.1.0/26", "node-2")],
-            &[PoolInfo {
-                cidr: "10.0.0.0/16".into(),
-            }],
-        );
-        assert_eq!(without, with);
     }
 
     // --- determinism across the expanded set --------------------------------
@@ -439,8 +401,8 @@ mod tests {
             block("10.0.1.0/26", "node-2"),
             block("10.0.0.0/26", "node-1"),
         ];
-        let a = r.resolve_all(&workloads, &blocks, &[]);
-        let b = r.resolve_all(&workloads, &blocks, &[]);
+        let a = r.resolve_all(&workloads, &blocks);
+        let b = r.resolve_all(&workloads, &blocks);
         assert_eq!(a, b, "output is deterministic");
 
         let dsts: Vec<_> = a.iter().map(|r| r.dst.as_str()).collect();

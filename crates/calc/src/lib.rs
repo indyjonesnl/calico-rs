@@ -21,5 +21,5 @@ pub use policy_eval::{
     Decision, Direction, EvalPolicy, EvalRule, Packet, PolicyEvaluator, RuleAction, Tier,
     TierDefault,
 };
-pub use routes::{BlockInfo, PoolInfo, Route, RouteResolver, RouteType, WorkloadInfo};
+pub use routes::{BlockInfo, Route, RouteResolver, RouteType, WorkloadInfo};
 pub use selector::{Selector, SelectorError};
