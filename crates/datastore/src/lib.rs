@@ -17,6 +17,7 @@ mod kdd;
 mod mem;
 mod model;
 mod syncer;
+pub mod updateprocessors;
 mod watchersyncer;
 
 pub use backend::{
@@ -35,4 +36,10 @@ pub use kdd::{
 pub use mem::MemStore;
 pub use model::{cidr_to_token, KVPair, Key, ResourceKind};
 pub use syncer::{SyncStatus, SyncerEvent, UpdateType};
+pub use updateprocessors::{
+    augment_policy_selector, process, process_felix_configuration, process_ip_pool,
+    process_network_policy, process_workload_endpoint, ConfigV1, EndpointPortV1, IpPoolV1,
+    IpPoolV1Key, PolicyKind, PolicyV1, PolicyV1Key, ProcessError, RuleV1, V1KVPair, V1Key, V1Value,
+    WorkloadEndpointV1, WorkloadEndpointV1Key, LABEL_NAMESPACE, LABEL_SERVICE_ACCOUNT,
+};
 pub use watchersyncer::watch_many;
