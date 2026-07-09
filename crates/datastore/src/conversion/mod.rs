@@ -191,10 +191,7 @@ pub fn pod_to_workload_endpoint(pod: &Pod) -> Option<WorkloadEndpointConversion>
 
     // Service account: upstream reads spec.serviceAccountName (K8s defaults it to
     // "default" on admission). Add the SA profile only when a name is present.
-    let service_account = spec
-        .service_account_name
-        .clone()
-        .filter(|s| !s.is_empty());
+    let service_account = spec.service_account_name.clone().filter(|s| !s.is_empty());
 
     let mut profiles = vec![format!("{NAMESPACE_PROFILE_PREFIX}{namespace}")];
     if let Some(sa) = service_account.as_deref() {
@@ -303,10 +300,7 @@ pub fn namespace_object_to_profile(ns: &Namespace) -> (String, ProfileSpec) {
 /// `ksa.<namespace>.<sa>`. SA labels are exposed under the `pcsa.` prefix; the
 /// profile carries a default allow posture consistent with the namespace
 /// projection.
-pub fn service_account_to_profile(
-    namespace: &str,
-    sa: &ServiceAccount,
-) -> (String, ProfileSpec) {
+pub fn service_account_to_profile(namespace: &str, sa: &ServiceAccount) -> (String, ProfileSpec) {
     use apis::{Action, Rule};
     let name = service_account_profile_name(namespace, &sa.name_any());
     let labels_to_apply = sa
@@ -402,7 +396,10 @@ mod tests {
     #[test]
     fn veth_name_matches_cni_reference_vectors() {
         // Must stay byte-identical to cni::veth_name_for_workload's pinned vectors.
-        assert_eq!(veth_name_for_workload("default", "nginx"), "calic440f455693");
+        assert_eq!(
+            veth_name_for_workload("default", "nginx"),
+            "calic440f455693"
+        );
         assert_eq!(
             veth_name_for_workload("kube-system", "coredns-abc"),
             "cali3d5d6ab04b5"
@@ -452,15 +449,24 @@ mod tests {
             vec!["kns.default".to_string(), "ksa.default.sa1".to_string()]
         );
         assert_eq!(c.spec.service_account_name.as_deref(), Some("sa1"));
-        assert_eq!(c.spec.interface_name, veth_name_for_workload("default", "podA"));
+        assert_eq!(
+            c.spec.interface_name,
+            veth_name_for_workload("default", "podA")
+        );
         // Injected labels present alongside the pod labels.
         assert_eq!(c.labels.get("labelA").unwrap(), "valueA");
         assert_eq!(c.labels.get(LABEL_NAMESPACE).unwrap(), "default");
         assert_eq!(c.labels.get(LABEL_ORCHESTRATOR).unwrap(), "k8s");
         assert_eq!(c.labels.get(LABEL_SERVICE_ACCOUNT).unwrap(), "sa1");
         // Metadata annotation round-trips the WEP labels under the upstream key.
-        let meta = c.annotations.get(METADATA_ANNOTATION).expect("metadata annotation");
-        assert!(meta.contains("\"projectcalico.org/namespace\":\"default\""), "{meta}");
+        let meta = c
+            .annotations
+            .get(METADATA_ANNOTATION)
+            .expect("metadata annotation");
+        assert!(
+            meta.contains("\"projectcalico.org/namespace\":\"default\""),
+            "{meta}"
+        );
         assert!(meta.contains("\"creationTimestamp\":null"), "{meta}");
     }
 
@@ -553,7 +559,10 @@ mod tests {
 
     #[test]
     fn service_account_profile_name_defaults_empty_namespace() {
-        assert_eq!(service_account_profile_name("", "default"), "ksa.default.default");
+        assert_eq!(
+            service_account_profile_name("", "default"),
+            "ksa.default.default"
+        );
     }
 
     // ---- Node → Calico Node ----

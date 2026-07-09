@@ -268,7 +268,12 @@ impl Backend for MemBackend {
         let mut store = self.store.lock().expect("mem backend poisoned");
         let rev = match revision {
             Some(r) => r,
-            None => store.get(&path).ok_or(DsError::ResourceDoesNotExist)?.revision,
+            None => {
+                store
+                    .get(&path)
+                    .ok_or(DsError::ResourceDoesNotExist)?
+                    .revision
+            }
         };
         store.delete(&path, rev)?;
         Ok(())
@@ -333,7 +338,9 @@ impl Backend for KddBackend {
         // exact token losslessly — and without a re-read that would open a
         // TOCTOU window and defeat the CAS.
         let raw = rev.to_string();
-        let v = self.update(kind, ns.as_deref(), &name, kv.value, &raw).await?;
+        let v = self
+            .update(kind, ns.as_deref(), &name, kv.value, &raw)
+            .await?;
         Ok(KVPair::with_revision(kv.key, v.spec, v.revision))
     }
 
@@ -486,10 +493,7 @@ mod tests {
         let b = MemBackend::new();
         let key = res_key(ResourceKind::IpPool, None, "dup");
         b.create(KVPair::new(key.clone(), json!({}))).await.unwrap();
-        let err = b
-            .create(KVPair::new(key, json!({})))
-            .await
-            .unwrap_err();
+        let err = b.create(KVPair::new(key, json!({}))).await.unwrap_err();
         assert_eq!(err, DsError::ResourceAlreadyExists);
     }
 
@@ -497,7 +501,10 @@ mod tests {
     async fn get_missing_is_does_not_exist() {
         let b = MemBackend::new();
         let key = res_key(ResourceKind::Node, None, "ghost");
-        assert_eq!(b.get(&key).await.unwrap_err(), DsError::ResourceDoesNotExist);
+        assert_eq!(
+            b.get(&key).await.unwrap_err(),
+            DsError::ResourceDoesNotExist
+        );
     }
 
     #[tokio::test]
@@ -519,7 +526,11 @@ mod tests {
 
         // Correct revision wins and bumps the revision.
         let updated = b
-            .update(KVPair::with_revision(key.clone(), json!({"n": 3}), good_rev))
+            .update(KVPair::with_revision(
+                key.clone(),
+                json!({"n": 3}),
+                good_rev,
+            ))
             .await
             .unwrap();
         assert_eq!(updated.value, json!({"n": 3}));
@@ -551,7 +562,10 @@ mod tests {
         let key = res_key(ResourceKind::IpPool, None, "gone");
         let created = b.create(KVPair::new(key.clone(), json!({}))).await.unwrap();
         b.delete(&key, created.revision).await.unwrap();
-        assert_eq!(b.get(&key).await.unwrap_err(), DsError::ResourceDoesNotExist);
+        assert_eq!(
+            b.get(&key).await.unwrap_err(),
+            DsError::ResourceDoesNotExist
+        );
     }
 
     #[tokio::test]
@@ -572,7 +586,10 @@ mod tests {
         let key = res_key(ResourceKind::IpPool, None, "any");
         b.create(KVPair::new(key.clone(), json!({}))).await.unwrap();
         b.delete(&key, None).await.unwrap();
-        assert_eq!(b.get(&key).await.unwrap_err(), DsError::ResourceDoesNotExist);
+        assert_eq!(
+            b.get(&key).await.unwrap_err(),
+            DsError::ResourceDoesNotExist
+        );
         // Deleting a missing key without a revision reports it does not exist.
         assert_eq!(
             b.delete(&key, None).await.unwrap_err(),
@@ -585,10 +602,16 @@ mod tests {
         let b = MemBackend::new();
         let key = res_key(ResourceKind::IpPool, None, "up");
         // create-if-absent
-        let first = b.apply(KVPair::new(key.clone(), json!({"v": 1}))).await.unwrap();
+        let first = b
+            .apply(KVPair::new(key.clone(), json!({"v": 1})))
+            .await
+            .unwrap();
         assert_eq!(first.value, json!({"v": 1}));
         // update-if-present (no revision needed for apply)
-        let second = b.apply(KVPair::new(key.clone(), json!({"v": 2}))).await.unwrap();
+        let second = b
+            .apply(KVPair::new(key.clone(), json!({"v": 2})))
+            .await
+            .unwrap();
         assert_eq!(second.value, json!({"v": 2}));
         assert_ne!(first.revision, second.revision);
         assert_eq!(b.get(&key).await.unwrap().value, json!({"v": 2}));
@@ -616,9 +639,12 @@ mod tests {
         ))
         .await
         .unwrap();
-        b.create(KVPair::new(res_key(ResourceKind::IpPool, None, "pool"), json!({})))
-            .await
-            .unwrap();
+        b.create(KVPair::new(
+            res_key(ResourceKind::IpPool, None, "pool"),
+            json!({}),
+        ))
+        .await
+        .unwrap();
 
         // All network policies (both namespaces).
         let all = b
@@ -640,12 +666,19 @@ mod tests {
             .all(|kv| matches!(&kv.key, Key::Resource { namespace: Some(n), .. } if n == "ns1")));
 
         // Only the pool.
-        let pools = b.list(&ListOptions::kind(ResourceKind::IpPool)).await.unwrap();
+        let pools = b
+            .list(&ListOptions::kind(ResourceKind::IpPool))
+            .await
+            .unwrap();
         assert_eq!(pools.items.len(), 1);
 
         // Single named item.
         let one = b
-            .list(&ListOptions::kind(ResourceKind::NetworkPolicy).in_namespace("ns2").named("p3"))
+            .list(
+                &ListOptions::kind(ResourceKind::NetworkPolicy)
+                    .in_namespace("ns2")
+                    .named("p3"),
+            )
             .await
             .unwrap();
         assert_eq!(one.items.len(), 1);
@@ -671,7 +704,10 @@ mod tests {
 
     #[test]
     fn cas_error_maps_to_ds_error() {
-        assert_eq!(DsError::from(CasError::NotFound), DsError::ResourceDoesNotExist);
+        assert_eq!(
+            DsError::from(CasError::NotFound),
+            DsError::ResourceDoesNotExist
+        );
         assert_eq!(
             DsError::from(CasError::AlreadyExists),
             DsError::ResourceAlreadyExists
@@ -712,15 +748,12 @@ mod tests {
         let ka = list_item_key(ResourceKind::NetworkPolicy, None, &a);
         let kb = list_item_key(ResourceKind::NetworkPolicy, None, &b);
 
-        assert_eq!(
-            ka,
-            res_key(ResourceKind::NetworkPolicy, Some("ns1"), "dup")
+        assert_eq!(ka, res_key(ResourceKind::NetworkPolicy, Some("ns1"), "dup"));
+        assert_eq!(kb, res_key(ResourceKind::NetworkPolicy, Some("ns2"), "dup"));
+        assert_ne!(
+            ka, kb,
+            "same-named items in different namespaces must not collide"
         );
-        assert_eq!(
-            kb,
-            res_key(ResourceKind::NetworkPolicy, Some("ns2"), "dup")
-        );
-        assert_ne!(ka, kb, "same-named items in different namespaces must not collide");
         assert_ne!(ka.path(), kb.path());
     }
 
@@ -735,7 +768,10 @@ mod tests {
             Some("ns1"),
             &kdd_value("p", None),
         );
-        assert_eq!(scoped, res_key(ResourceKind::NetworkPolicy, Some("ns1"), "p"));
+        assert_eq!(
+            scoped,
+            res_key(ResourceKind::NetworkPolicy, Some("ns1"), "p")
+        );
 
         // Cluster-scoped kind: no namespace anywhere.
         let cluster = list_item_key(ResourceKind::IpPool, None, &kdd_value("pool", None));

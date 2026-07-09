@@ -202,7 +202,10 @@ mod tests {
         let insync_at = index_of(&out, &status(InSync));
         for name in ["a1", "b1", "a2"] {
             let at = index_of(&out, &upd(name, New));
-            assert!(at < insync_at, "snapshot New {name} must precede combined InSync");
+            assert!(
+                at < insync_at,
+                "snapshot New {name} must precede combined InSync"
+            );
         }
         // Live updates follow the combined InSync.
         assert!(index_of(&out, &upd("a1", Updated)) > insync_at);
@@ -257,8 +260,8 @@ mod tests {
             1,
             vec![
                 (0, upd("a", New)),
-                (0, status(InSync)),       // combined InSync
-                (0, upd("a", Updated)),    // live
+                (0, status(InSync)),    // combined InSync
+                (0, upd("a", Updated)), // live
                 // --- kind 0 watch desyncs and re-lists ---
                 (0, status(ResyncInProgress)), // suppressed: must NOT reset combined
                 (0, upd("a", New)),            // re-listed snapshot, surfaced as an update
@@ -279,8 +282,15 @@ mod tests {
             .filter(|(_, e)| **e == upd("a", New))
             .map(|(i, _)| i)
             .collect();
-        assert_eq!(relist_items.len(), 2, "both the initial and re-list New surface");
-        assert!(relist_items[1] > insync_at, "re-list New arrives after combined InSync");
+        assert_eq!(
+            relist_items.len(),
+            2,
+            "both the initial and re-list New surface"
+        );
+        assert!(
+            relist_items[1] > insync_at,
+            "re-list New arrives after combined InSync"
+        );
 
         assert_eq!(
             out,

@@ -375,7 +375,9 @@ mod tests {
         );
         let out = to_v1_events(ev);
         assert_eq!(out.len(), 2);
-        assert!(out.iter().all(|e| matches!(e, SyncerV1Event::Delete { .. })));
+        assert!(out
+            .iter()
+            .all(|e| matches!(e, SyncerV1Event::Delete { .. })));
     }
 
     // ---- processor-less kind → skipped, not an error ----
@@ -407,7 +409,9 @@ mod tests {
 
     // ---- stream-level composition over a synthetic input ----
 
-    async fn run_stream(events: Vec<Result<SyncerEvent, CasError>>) -> Vec<Result<SyncerV1Event, CasError>> {
+    async fn run_stream(
+        events: Vec<Result<SyncerEvent, CasError>>,
+    ) -> Vec<Result<SyncerV1Event, CasError>> {
         to_v1_stream(stream::iter(events)).collect().await
     }
 
@@ -423,7 +427,13 @@ mod tests {
                 UpdateType::New,
             )),
             // Skipped: no processor for Tier — must not appear, must not error.
-            Ok(update_event(ResourceKind::Tier, None, "t", json!({}), UpdateType::New)),
+            Ok(update_event(
+                ResourceKind::Tier,
+                None,
+                "t",
+                json!({}),
+                UpdateType::New,
+            )),
             Ok(SyncerEvent::Status(SyncStatus::InSync)),
             Err(CasError::Backend("boom".into())),
         ];
@@ -482,8 +492,10 @@ mod tests {
             ]
         );
 
-        let tunnel: Vec<ResourceKind> =
-            tunnel_ip_syncer_kinds().into_iter().map(|(k, _)| k).collect();
+        let tunnel: Vec<ResourceKind> = tunnel_ip_syncer_kinds()
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
         assert_eq!(tunnel, vec![ResourceKind::Node, ResourceKind::IpPool]);
 
         let node_status: Vec<ResourceKind> = node_status_syncer_kinds()

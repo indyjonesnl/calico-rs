@@ -105,9 +105,18 @@ mod tests {
         assert!(json.contains("\"ipv4Address\":\"10.0.0.1/24\""), "{json}");
         assert!(json.contains("\"ipv6Address\":\"fd00::1/64\""), "{json}");
         assert!(json.contains("\"asNumber\":64512"), "{json}");
-        assert!(json.contains("\"ipv4IPIPTunnelAddr\":\"10.244.0.1\""), "{json}");
-        assert!(json.contains("\"ipv4VXLANTunnelAddr\":\"10.244.0.2\""), "{json}");
-        assert!(json.contains("\"ipv6VXLANTunnelAddr\":\"fd00::2\""), "{json}");
+        assert!(
+            json.contains("\"ipv4IPIPTunnelAddr\":\"10.244.0.1\""),
+            "{json}"
+        );
+        assert!(
+            json.contains("\"ipv4VXLANTunnelAddr\":\"10.244.0.2\""),
+            "{json}"
+        );
+        assert!(
+            json.contains("\"ipv6VXLANTunnelAddr\":\"fd00::2\""),
+            "{json}"
+        );
         assert!(json.contains("\"orchRefs\":[{"), "{json}");
         assert!(json.contains("\"nodeName\":\"nodeA\""), "{json}");
         assert!(json.contains("\"orchestrator\":\"k8s\""), "{json}");

@@ -214,7 +214,10 @@ pub enum V1Key {
     IpPool(IpPoolV1Key),
     WorkloadEndpoint(WorkloadEndpointV1Key),
     /// A flattened config key (host + name).
-    Config { host: Option<String>, name: String },
+    Config {
+        host: Option<String>,
+        name: String,
+    },
 }
 
 /// A v1 value emitted by [`process`].
@@ -369,8 +372,16 @@ pub fn process_network_policy(
         order: spec.order,
         selector,
         types: spec.types.iter().copied().map(policy_type_to_v1).collect(),
-        inbound_rules: spec.ingress.iter().map(|r| rule_to_v1(r, Some(ns))).collect(),
-        outbound_rules: spec.egress.iter().map(|r| rule_to_v1(r, Some(ns))).collect(),
+        inbound_rules: spec
+            .ingress
+            .iter()
+            .map(|r| rule_to_v1(r, Some(ns)))
+            .collect(),
+        outbound_rules: spec
+            .egress
+            .iter()
+            .map(|r| rule_to_v1(r, Some(ns)))
+            .collect(),
     };
     Ok((key, value))
 }
@@ -503,7 +514,11 @@ pub fn process_felix_configuration(name: &str, spec: &FelixConfigurationSpec) ->
     if let Some(b) = spec.bpf_enabled {
         push("BPFEnabled", b.to_string());
     }
-    if let Some(s) = spec.log_severity_screen.as_deref().filter(|s| !s.is_empty()) {
+    if let Some(s) = spec
+        .log_severity_screen
+        .as_deref()
+        .filter(|s| !s.is_empty())
+    {
         push("LogSeverityScreen", s.to_string());
     }
     if let Some(s) = spec.interface_prefix.as_deref().filter(|s| !s.is_empty()) {
@@ -841,7 +856,9 @@ mod tests {
         assert_eq!(val.ports[0].protocol, "tcp");
         // Service-account label injected.
         assert_eq!(
-            val.labels.get("projectcalico.org/serviceaccount").map(String::as_str),
+            val.labels
+                .get("projectcalico.org/serviceaccount")
+                .map(String::as_str),
             Some("sa-1")
         );
     }
@@ -912,7 +929,9 @@ mod tests {
 
     #[test]
     fn felixconfig_empty_spec_yields_nothing() {
-        assert!(process_felix_configuration("default", &FelixConfigurationSpec::default()).is_empty());
+        assert!(
+            process_felix_configuration("default", &FelixConfigurationSpec::default()).is_empty()
+        );
     }
 
     // ---- dispatch ----
@@ -929,7 +948,10 @@ mod tests {
         assert_eq!(out.len(), 1);
         match &out[0].value {
             V1Value::Policy(p) => {
-                assert_eq!(p.selector, "(a == 'b') && projectcalico.org/namespace == 'ns1'")
+                assert_eq!(
+                    p.selector,
+                    "(a == 'b') && projectcalico.org/namespace == 'ns1'"
+                )
             }
             _ => panic!("expected policy value"),
         }
@@ -945,9 +967,11 @@ mod tests {
         let spec = serde_json::json!({ "bpfEnabled": true, "logSeverityScreen": "Debug" });
         let out = process(ResourceKind::FelixConfiguration, &key, &spec).unwrap();
         assert_eq!(out.len(), 2);
-        assert!(out
-            .iter()
-            .any(|kv| kv.key == V1Key::Config { host: None, name: "BPFEnabled".into() }));
+        assert!(out.iter().any(|kv| kv.key
+            == V1Key::Config {
+                host: None,
+                name: "BPFEnabled".into()
+            }));
     }
 
     #[test]

@@ -42,10 +42,9 @@ pub use syncers::{
     tunnel_ip_syncer_kinds, SyncerV1Event,
 };
 pub use updateprocessors::{
-    augment_policy_selector, process, process_felix_configuration, process_ip_pool,
-    process_keys, process_network_policy, process_workload_endpoint, ConfigV1, EndpointPortV1,
-    IpPoolV1, IpPoolV1Key, PolicyKind, PolicyV1, PolicyV1Key, ProcessError, RuleV1, V1KVPair,
-    V1Key, V1Value, WorkloadEndpointV1, WorkloadEndpointV1Key, LABEL_NAMESPACE,
-    LABEL_SERVICE_ACCOUNT,
+    augment_policy_selector, process, process_felix_configuration, process_ip_pool, process_keys,
+    process_network_policy, process_workload_endpoint, ConfigV1, EndpointPortV1, IpPoolV1,
+    IpPoolV1Key, PolicyKind, PolicyV1, PolicyV1Key, ProcessError, RuleV1, V1KVPair, V1Key, V1Value,
+    WorkloadEndpointV1, WorkloadEndpointV1Key, LABEL_NAMESPACE, LABEL_SERVICE_ACCOUNT,
 };
 pub use watchersyncer::watch_many;
