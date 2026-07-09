@@ -6,6 +6,7 @@
 //! - [`nft`] — concrete nftables rendering + programming (`nft -f -`)
 
 pub mod config;
+pub mod dataplane;
 pub mod nat;
 pub mod nft;
 pub mod nftables;
