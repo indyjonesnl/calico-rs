@@ -1397,9 +1397,11 @@ dependencies = [
 name = "node"
 version = "0.1.0"
 dependencies = [
+ "apis",
  "base64",
  "datastore",
  "felix",
+ "serde_json",
  "tokio",
 ]
 

@@ -17,6 +17,8 @@
 
 use std::time::Duration;
 
+mod startup;
+
 const SELF_CNI_BIN: &str = "/opt/calico-rs/bin/calico";
 const KUBECONFIG_NAME: &str = "calico-rs-kubeconfig";
 const CONFLIST_NAME: &str = "10-calico.conflist";
@@ -51,6 +53,13 @@ async fn run() -> Result<(), String> {
     let backend = datastore::KddBackend::try_default()
         .await
         .map_err(|e| format!("connect datastore: {e}"))?;
+
+    // Baseline bootstrap: default IPPool, ClusterInformation (datastore_ready
+    // gate the CNI plugin waits on), and this node's Calico Node CR. Must
+    // happen before the reconcile loops start — they assume the baseline is
+    // already in place.
+    startup::startup(&backend, &nodename).await?;
+    println!("calico-rs-node: datastore baseline ensured (node={nodename})");
 
     // VXLAN overlay reconcile — runs in the host netns (this pod is hostNetwork),
     // programming this node's tunnel device + routes to remote nodes' blocks.
