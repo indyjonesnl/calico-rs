@@ -227,6 +227,17 @@ impl AllocationBlock {
         Ok(ReleaseOutcome::Released)
     }
 
+    /// The addresses currently allocated under `handle_id` (read-only). Mirrors
+    /// [`release_by_handle`](Self::release_by_handle)'s traversal without freeing
+    /// anything — used to recover a handle's existing allocations (e.g. a VXLAN
+    /// tunnel IP) instead of allocating a fresh, leaking one.
+    pub fn ips_for_handle(&self, handle_id: &str) -> Vec<IpAddr> {
+        (0..self.allocations.len())
+            .filter(|&ord| self.handle_of(ord) == Some(handle_id))
+            .map(|ord| self.cidr.nth(ord).expect("ordinal within capacity"))
+            .collect()
+    }
+
     /// Release every address allocated under `handle_id`. Returns the released
     /// addresses.
     pub fn release_by_handle(&mut self, handle_id: &str) -> Vec<IpAddr> {
@@ -481,6 +492,20 @@ mod tests {
         let freed = b.release_by_handle("h1");
         assert_eq!(freed.len(), 3);
         assert_eq!(b.num_in_use(), 2);
+    }
+
+    #[test]
+    fn ips_for_handle_lists_without_freeing() {
+        let mut b = block("10.0.0.0/26");
+        let want = b.auto_assign(2, attr("h1"), &HashSet::new()); // .0, .1
+        b.auto_assign(1, attr("h2"), &HashSet::new()); // .2
+        let got = b.ips_for_handle("h1");
+        assert_eq!(got, want);
+        // Read-only: nothing was released.
+        assert_eq!(b.num_in_use(), 3);
+        assert_eq!(b.ips_for_handle("h2").len(), 1);
+        // A handle with no allocations yields an empty list.
+        assert!(b.ips_for_handle("nope").is_empty());
     }
 
     #[test]

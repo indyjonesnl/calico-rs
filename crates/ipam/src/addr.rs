@@ -110,6 +110,22 @@ impl Cidr {
         (ord < cap).then_some(ord)
     }
 
+    /// True if `other` is wholly contained within this CIDR: same address
+    /// family, this prefix is no longer than `other`'s, and `other`'s network
+    /// address masked down to this prefix equals this network address. A CIDR
+    /// contains itself. Used for longest-prefix pool → block containment.
+    pub fn contains(&self, other: &Cidr) -> bool {
+        if self.prefix_len > other.prefix_len {
+            return false;
+        }
+        match (self.network, other.network) {
+            (IpAddr::V4(_), IpAddr::V4(_)) | (IpAddr::V6(_), IpAddr::V6(_)) => {
+                mask_to_network(other.network, self.prefix_len) == self.network
+            }
+            _ => false, // family mismatch
+        }
+    }
+
     /// Enumerate the sub-blocks of prefix length `block_prefix` within this CIDR
     /// (e.g. the /26 blocks of a /16 pool). Errors if `block_prefix` is invalid
     /// for the family / smaller than this prefix, or if the pool would yield an
@@ -238,6 +254,22 @@ mod tests {
         assert_eq!(blocks[0], Cidr::parse("10.0.0.0/26").unwrap());
         assert_eq!(blocks[1], Cidr::parse("10.0.0.64/26").unwrap());
         assert_eq!(blocks[3], Cidr::parse("10.0.0.192/26").unwrap());
+    }
+
+    #[test]
+    fn contains_matches_pool_block_and_family() {
+        let pool = Cidr::parse("192.168.0.0/16").unwrap();
+        // A /26 block within the pool is contained; the pool contains itself.
+        assert!(pool.contains(&Cidr::parse("192.168.5.0/26").unwrap()));
+        assert!(pool.contains(&pool));
+        // A block outside the pool is not contained.
+        assert!(!pool.contains(&Cidr::parse("10.0.0.0/26").unwrap()));
+        // A wider prefix cannot be contained by a narrower one.
+        assert!(!Cidr::parse("192.168.5.0/26")
+            .unwrap()
+            .contains(&Cidr::parse("192.168.0.0/16").unwrap()));
+        // Family mismatch is never contained.
+        assert!(!pool.contains(&Cidr::parse("fd00::/122").unwrap()));
     }
 
     #[test]

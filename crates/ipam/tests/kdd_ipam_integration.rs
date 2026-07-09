@@ -166,6 +166,15 @@ async fn cluster_backed_release_by_handle_frees_addresses() {
     assert_eq!(ips.len(), 4);
     assert_eq!(ipam.block_free_count(cidr).await.unwrap(), 60);
 
+    // ips_by_handle reports exactly the handle's live allocations (read-only).
+    let mut by_handle = ipam.ips_by_handle(handle).await.expect("ips_by_handle");
+    by_handle.sort();
+    let mut want = ips.clone();
+    want.sort();
+    assert_eq!(by_handle, want);
+    // Read-only: the block is unchanged by the query.
+    assert_eq!(ipam.block_free_count(cidr).await.unwrap(), 60);
+
     let freed = ipam.release_by_handle(handle).await.expect("release");
     assert_eq!(freed.len(), 4);
     // No leaks: all addresses returned to the block.
@@ -176,6 +185,8 @@ async fn cluster_backed_release_by_handle_frees_addresses() {
         .await
         .unwrap()
         .is_none());
+    // ...and ips_by_handle now reports nothing for the released handle.
+    assert!(ipam.ips_by_handle(handle).await.unwrap().is_empty());
 
     // Idempotent second release.
     assert!(ipam

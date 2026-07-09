@@ -685,6 +685,7 @@ dependencies = [
  "k8s-openapi",
  "kube",
  "proto",
+ "reconcile",
  "rtnetlink",
  "serde_json",
  "sha2 0.11.0",

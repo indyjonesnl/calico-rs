@@ -237,6 +237,39 @@ impl KddIpam {
         }
     }
 
+    /// The addresses currently allocated under `handle_id` (read-only). Reads
+    /// the `IPAMHandle` CR, then walks each block it references and collects the
+    /// addresses that block attributes to this handle — the same traversal as
+    /// [`release_by_handle`](Self::release_by_handle), without freeing. Returns
+    /// an empty vec when the handle does not exist. Lets a caller recover a
+    /// stable-handle allocation (e.g. a node's VXLAN tunnel IP) after a crash
+    /// instead of allocating a second, leaking address.
+    pub async fn ips_by_handle(&self, handle_id: &str) -> Result<Vec<IpAddr>, IpamError> {
+        let hname = sanitize_name(handle_id);
+        let Some(hkv) = self
+            .backend
+            .get(ResourceKind::IpamHandle, None, &hname)
+            .await?
+        else {
+            return Ok(Vec::new()); // no such handle
+        };
+        let hspec: IpamHandleSpec = from_value(hkv.spec)?;
+
+        let mut ips = Vec::new();
+        for block_cidr_str in hspec.block.keys() {
+            let bname = cidr_to_token(block_cidr_str);
+            if let Some(bkv) = self
+                .backend
+                .get(ResourceKind::IpamBlock, None, &bname)
+                .await?
+            {
+                let block = spec_to_block(from_value(bkv.spec)?)?;
+                ips.extend(block.ips_for_handle(handle_id));
+            }
+        }
+        Ok(ips)
+    }
+
     /// Release every address allocated under `handle_id` (e.g. on CNI DEL),
     /// freeing them in their blocks and removing the handle. Retries on CAS
     /// conflict. Returns the released addresses. Idempotent when the handle is
