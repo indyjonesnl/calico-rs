@@ -275,7 +275,7 @@ pub struct StagedKubernetesNetworkPolicySpec {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub egress: Vec<k8s_openapi::api::networking::v1::NetworkPolicyEgressRule>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub policy_types: Vec<String>,
+    pub policy_types: Vec<PolicyType>,
 }
 
 #[cfg(test)]
@@ -423,7 +423,7 @@ mod tests {
         }"#;
         let spec: StagedKubernetesNetworkPolicySpec = serde_json::from_str(doc).unwrap();
         assert_eq!(spec.staged_action, StagedAction::Delete);
-        assert_eq!(spec.policy_types, vec!["Ingress".to_string()]);
+        assert_eq!(spec.policy_types, vec![PolicyType::Ingress]);
         assert_eq!(spec.ingress.len(), 1);
         let json = serde_json::to_string(&spec).unwrap();
         assert!(json.contains("\"podSelector\""));

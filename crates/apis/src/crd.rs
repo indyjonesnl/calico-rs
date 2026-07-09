@@ -104,5 +104,6 @@ mod tests {
         assert!(yaml.contains("name: kubecontrollersconfigurations.crd.projectcalico.org"));
         assert!(yaml.contains("name: caliconodestatuses.crd.projectcalico.org"));
         assert!(yaml.contains("stagedAction"));
+        assert!(yaml.contains("x-kubernetes-int-or-string"));
     }
 }
