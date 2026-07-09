@@ -21,6 +21,9 @@ use serde_json::{json, Value};
 use crate::cas::{CasError, Revision};
 use crate::model::ResourceKind;
 
+mod delete;
+pub use delete::{hash_hostname_for_label, hostname_hash_label, LABEL_HOSTNAME_HASH};
+
 const GROUP: &str = "crd.projectcalico.org";
 const VERSION: &str = "v1";
 
@@ -73,7 +76,7 @@ impl KddBackend {
         Ok(Self::new(client))
     }
 
-    fn api_resource(kind: ResourceKind) -> ApiResource {
+    pub(crate) fn api_resource(kind: ResourceKind) -> ApiResource {
         let gvk = GroupVersionKind::gvk(GROUP, VERSION, kind.kind_name());
         ApiResource::from_gvk_with_plural(&gvk, kind.as_str())
     }
@@ -219,7 +222,7 @@ impl KddBackend {
     }
 }
 
-enum Op {
+pub(crate) enum Op {
     Create,
     Get,
     Update,
@@ -227,7 +230,7 @@ enum Op {
     List,
 }
 
-fn map_err(e: kube::Error, op: Op) -> CasError {
+pub(crate) fn map_err(e: kube::Error, op: Op) -> CasError {
     match e {
         kube::Error::Api(resp) => match resp.code {
             404 => CasError::NotFound,
@@ -244,7 +247,7 @@ fn map_err(e: kube::Error, op: Op) -> CasError {
     }
 }
 
-fn to_value(obj: DynamicObject) -> Result<KddValue, CasError> {
+pub(crate) fn to_value(obj: DynamicObject) -> Result<KddValue, CasError> {
     let name = obj
         .metadata
         .name

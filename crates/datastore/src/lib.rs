@@ -17,9 +17,13 @@ mod mem;
 mod model;
 mod syncer;
 
-pub use backend::{key_to_target, Backend, DsError, KVPairList, ListOptions, MemBackend, WatchEvent};
+pub use backend::{
+    key_to_target, Backend, DsError, KVPairList, ListOptions, MemBackend, WatchEvent,
+};
 pub use cas::{CasError, CasStore, Revision, Versioned};
-pub use kdd::{KddBackend, KddValue};
+pub use kdd::{
+    hash_hostname_for_label, hostname_hash_label, KddBackend, KddValue, LABEL_HOSTNAME_HASH,
+};
 pub use mem::MemStore;
 pub use model::{cidr_to_token, KVPair, Key, ResourceKind};
 pub use syncer::{SyncStatus, SyncerEvent, UpdateType};

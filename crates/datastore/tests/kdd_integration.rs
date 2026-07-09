@@ -5,9 +5,12 @@
 //! To exercise it: `scripts/k0s-cluster.sh up` (which also applies the IPPool
 //! CRD used here), then `cargo test -p datastore --test kdd_integration`.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
-use datastore::{CasError, KddBackend, ResourceKind, SyncStatus, SyncerEvent, UpdateType};
+use datastore::{
+    hostname_hash_label, CasError, KddBackend, ResourceKind, SyncStatus, SyncerEvent, UpdateType,
+};
 use futures::StreamExt;
 use serde_json::json;
 
@@ -297,4 +300,76 @@ async fn kdd_ipamblock_roundtrip_with_nullable_allocations() {
         .delete(kind, None, name, &got.raw_revision)
         .await
         .expect("delete IPAMBlock");
+}
+
+#[tokio::test]
+async fn kdd_blockaffinity_list_by_host_and_soft_then_hard_delete() {
+    let Some(path) = kubeconfig_path() else {
+        eprintln!("SKIP: no kubeconfig (KUBECONFIG unset and .cluster/ absent)");
+        return;
+    };
+    let backend = skip_if_no_cluster!(KddBackend::from_kubeconfig_file(&path).await);
+    let kind = ResourceKind::BlockAffinity;
+    let host = "it-kdd-hostnamehash-host";
+    let name = "it-kdd-hostnamehash-host-10-99-0-0-26";
+
+    if let Err(e) = backend.list(kind, None).await {
+        eprintln!("SKIP: BlockAffinity CRD not reachable ({e})");
+        return;
+    }
+
+    // Clean slate: delete a leftover from a prior run (ignore absence).
+    if let Ok(Some(existing)) = backend.get(kind, None, name).await {
+        let _ = backend
+            .delete(kind, None, name, &existing.raw_revision)
+            .await;
+    }
+
+    // --- create with the hostname-hash label so list_by_host finds it ---
+    let created = backend
+        .create(
+            kind,
+            None,
+            name,
+            json!({ "node": host, "cidr": "10.99.0.0/26", "state": "confirmed" }),
+        )
+        .await
+        .expect("create BlockAffinity");
+
+    let (label, value) = hostname_hash_label(host);
+    let mut labels = BTreeMap::new();
+    labels.insert(label, value);
+    backend
+        .merge_patch(
+            kind,
+            None,
+            name,
+            json!({ "metadata": { "labels": labels } }),
+            Some(&created.raw_revision),
+        )
+        .await
+        .expect("stamp hostname-hash label");
+
+    // --- list_by_host finds it ---
+    let found = backend
+        .list_by_host(kind, host)
+        .await
+        .expect("list_by_host");
+    assert!(
+        found.iter().any(|v| v.name == name),
+        "list_by_host({host}) should find {name}, got {found:?}"
+    );
+
+    // --- soft_then_hard_delete removes it ---
+    backend
+        .soft_then_hard_delete(kind, None, name)
+        .await
+        .expect("soft_then_hard_delete");
+    assert!(backend.get(kind, None, name).await.unwrap().is_none());
+
+    // --- a second delete is a no-op (idempotent) ---
+    backend
+        .soft_then_hard_delete(kind, None, name)
+        .await
+        .expect("second soft_then_hard_delete should be idempotent");
 }
