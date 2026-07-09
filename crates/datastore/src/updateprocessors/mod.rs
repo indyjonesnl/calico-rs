@@ -181,9 +181,13 @@ pub struct WorkloadEndpointV1 {
     pub profile_ids: Vec<String>,
     pub ipv4_nets: Vec<String>,
     pub ipv6_nets: Vec<String>,
-    /// Endpoint labels; the service-account label is injected here (never a
-    /// `pcns.`/`pcsa.`-prefixed label — those are stripped so a WEP can't claim
-    /// another namespace).
+    /// Endpoint labels. Only the service-account label is injected here; pod
+    /// metadata labels are outside the current input surface — the lean
+    /// `apis::WorkloadEndpointSpec` this processor consumes carries no labels
+    /// of its own (they live on the pod's object metadata). There is no
+    /// `pcns.`/`pcsa.` stripping happening because there is nothing to strip
+    /// yet; if/when pod metadata labels are wired in (felix P3 consumer),
+    /// upstream's `pcns.`/`pcsa.` handling will need to be replicated here.
     pub labels: BTreeMap<String, String>,
     pub ports: Vec<EndpointPortV1>,
     pub allow_spoofed_source_prefixes: Vec<String>,
@@ -434,9 +438,13 @@ pub fn process_workload_endpoint(
         })
         .collect();
 
-    // Inject the service-account label if present. (The v3 WEP spec carries no
-    // labels of its own, so there is nothing to strip here — the pcns./pcsa.
-    // stripping in upstream applies to metadata labels we don't model.)
+    // Inject the service-account label if present. Pod metadata labels are out
+    // of scope here: the lean `apis::WorkloadEndpointSpec` this processor
+    // consumes carries no labels of its own (they live on object metadata,
+    // outside this input surface), so there is nothing to strip — no
+    // `pcns.`/`pcsa.` prefixed labels can appear. If pod metadata labels are
+    // ever wired into this input surface (felix P3 consumer), upstream's
+    // `pcns.`/`pcsa.` stripping will need to be replicated here.
     let mut labels = BTreeMap::new();
     if let Some(sa) = spec
         .service_account_name
@@ -694,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    fn rule_namespace_selector_translates_all_and_global() {
+    fn rule_namespace_selector_simplified_translation() {
         let all = EntityRule {
             namespace_selector: Some("all()".into()),
             ..Default::default()
@@ -712,6 +720,19 @@ mod tests {
             "!has(projectcalico.org/namespace)"
         );
         // namespaceSelector + endpoint selector combine.
+        //
+        // NOTE: this asserts the CURRENT SIMPLIFIED output (raw label keys),
+        // NOT verified upstream parity. Upstream `getEndpointSelector` /
+        // `parseSelectorAttachPrefix` rewrites a namespaceSelector's label
+        // keys with a `pcns.` prefix (and service-account-derived selectors
+        // with `pcsa.`), so the faithful upstream result here would be
+        // `(pcns.env == 'prod') && (role == 'db')`. We have no selector
+        // parser/dependency to do that rewrite yet, so `rule_endpoint_selector`
+        // passes the namespaceSelector through unprefixed — see the
+        // "Documented simplifications" note on that function. Fixing this to
+        // match upstream requires a real selector parser and is tracked for
+        // the T021 felix consumer; do not mistake this assertion for
+        // confirmed parity.
         let both = EntityRule {
             namespace_selector: Some("env == 'prod'".into()),
             selector: Some("role == 'db'".into()),
