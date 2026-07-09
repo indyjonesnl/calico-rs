@@ -9,7 +9,8 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use datastore::{
-    hostname_hash_label, CasError, KddBackend, ResourceKind, SyncStatus, SyncerEvent, UpdateType,
+    hostname_hash_label, watch_many, CasError, KddBackend, ResourceKind, SyncStatus, SyncerEvent,
+    UpdateType,
 };
 use futures::StreamExt;
 use serde_json::json;
@@ -194,6 +195,54 @@ async fn kdd_watch_reaches_insync_and_sees_new_object() {
             .await;
     }
     assert!(saw_our_pool, "watcher did not observe the created pool");
+}
+
+#[tokio::test]
+async fn watch_many_reaches_single_combined_insync() {
+    let Some(path) = kubeconfig_path() else {
+        eprintln!("SKIP: no kubeconfig");
+        return;
+    };
+    let backend = skip_if_no_cluster!(KddBackend::from_kubeconfig_file(&path).await);
+
+    // Two kinds at once (both cluster-scoped here). Skip if either CRD is absent.
+    for kind in [ResourceKind::IpPool, ResourceKind::FelixConfiguration] {
+        if let Err(e) = backend.list(kind, None).await {
+            eprintln!("SKIP: {kind:?} CRD not reachable ({e})");
+            return;
+        }
+    }
+
+    let stream = watch_many(
+        &backend,
+        &[
+            (ResourceKind::IpPool, None),
+            (ResourceKind::FelixConfiguration, None),
+        ],
+    );
+    futures::pin_mut!(stream);
+
+    // Drain to the combined InSync (bounded), asserting the combined-status
+    // invariant: exactly one leading ResyncInProgress and no InSync before it.
+    let mut resyncs = 0;
+    let mut reached_insync = false;
+    for _ in 0..500 {
+        match tokio::time::timeout(Duration::from_secs(10), stream.next()).await {
+            Ok(Some(Ok(SyncerEvent::Status(SyncStatus::ResyncInProgress)))) => resyncs += 1,
+            Ok(Some(Ok(SyncerEvent::Status(SyncStatus::InSync)))) => {
+                reached_insync = true;
+                break;
+            }
+            Ok(Some(_)) => continue, // snapshot updates
+            Ok(None) => break,
+            Err(_) => break,
+        }
+    }
+    assert!(reached_insync, "watch_many did not reach combined InSync");
+    assert_eq!(
+        resyncs, 1,
+        "combined status must emit ResyncInProgress exactly once, not per kind"
+    );
 }
 
 #[tokio::test]

@@ -17,6 +17,7 @@ mod kdd;
 mod mem;
 mod model;
 mod syncer;
+mod watchersyncer;
 
 pub use backend::{
     key_to_target, Backend, DsError, KVPairList, ListOptions, MemBackend, WatchEvent,
@@ -34,3 +35,4 @@ pub use kdd::{
 pub use mem::MemStore;
 pub use model::{cidr_to_token, KVPair, Key, ResourceKind};
 pub use syncer::{SyncStatus, SyncerEvent, UpdateType};
+pub use watchersyncer::watch_many;
