@@ -36,6 +36,9 @@ pub struct KddValue {
     /// — without it, same-named resources in different namespaces collide.
     pub namespace: Option<String>,
     pub spec: Value,
+    /// The object's `metadata.labels` (empty if unset). Load-bearing for
+    /// WorkloadEndpoints: namespace-scoped policies select on these keys.
+    pub labels: std::collections::BTreeMap<String, String>,
     /// Kubernetes `resourceVersion`, parsed to our numeric [`Revision`].
     pub revision: Revision,
     pub raw_revision: String,
@@ -265,10 +268,12 @@ fn to_value(obj: DynamicObject) -> Result<KddValue, CasError> {
         .get("spec")
         .cloned()
         .unwrap_or(Value::Object(Default::default()));
+    let labels = obj.metadata.labels.clone().unwrap_or_default();
     Ok(KddValue {
         name,
         namespace,
         spec,
+        labels,
         revision,
         raw_revision,
     })

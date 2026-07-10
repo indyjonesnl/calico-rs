@@ -766,6 +766,7 @@ mod tests {
             name: name.to_string(),
             namespace: namespace.map(str::to_string),
             spec: json!({}),
+            labels: std::collections::BTreeMap::new(),
             revision: 1,
             raw_revision: "1".to_string(),
         }

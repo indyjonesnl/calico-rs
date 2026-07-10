@@ -331,6 +331,8 @@ dependencies = [
  "futures",
  "hex",
  "ipam",
+ "k8s-openapi",
+ "kube",
  "nix 0.31.3",
  "rtnetlink",
  "serde",

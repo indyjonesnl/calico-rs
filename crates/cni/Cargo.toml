@@ -13,6 +13,8 @@ datastore = { version = "0.1.0", path = "../datastore" }
 futures.workspace = true
 hex = "0.4.3"
 ipam = { version = "0.1.0", path = "../ipam" }
+k8s-openapi = { version = "0.28.0", features = ["v1_35"] }
+kube = { version = "4.0.0", features = ["client", "rustls-tls"] }
 nix = { version = "0.31.3", features = ["sched", "mount"] }
 rtnetlink = "0.21.0"
 serde = { workspace = true, features = ["derive"] }

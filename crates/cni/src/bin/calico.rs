@@ -80,6 +80,39 @@ fn node_name() -> String {
         .unwrap_or_else(|| "unknown-node".to_string())
 }
 
+/// Best-effort fetch of a pod's `metadata.labels` and `spec.serviceAccountName`
+/// for WEP label enrichment. Returns empty labels + `None` SA (and logs) on any
+/// error so CNI ADD never fails over label enrichment. The DaemonSet ClusterRole
+/// already grants `pods get/list/watch`, so this normally succeeds.
+#[cfg(target_os = "linux")]
+async fn fetch_pod_labels_and_sa(
+    backend: &datastore::KddBackend,
+    ids: &cni::WepIdentifiers,
+) -> (std::collections::BTreeMap<String, String>, Option<String>) {
+    use k8s_openapi::api::core::v1::Pod;
+    use kube::Api;
+
+    let api: Api<Pod> = Api::namespaced(backend.client(), &ids.namespace);
+    match api.get(&ids.pod).await {
+        Ok(pod) => {
+            let labels = pod.metadata.labels.clone().unwrap_or_default();
+            let sa = pod
+                .spec
+                .as_ref()
+                .and_then(|s| s.service_account_name.clone())
+                .filter(|s| !s.is_empty());
+            (labels, sa)
+        }
+        Err(e) => {
+            eprintln!(
+                "calico: pod {}/{} fetch failed ({e}); stamping Calico-injected labels only",
+                ids.namespace, ids.pod
+            );
+            (std::collections::BTreeMap::new(), None)
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn cmd_add(netconf: &cni::NetConf) -> Result<String, String> {
     use cni::result::{CniResult, Interface, IpConfig, RouteEntry};
@@ -177,10 +210,22 @@ fn cmd_add(netconf: &cni::NetConf) -> Result<String, String> {
             )
             .await?;
 
+            // Best-effort label enrichment: fetch the Pod to read its own labels
+            // and service account. On any failure (pod not found / RBAC / API
+            // error) we log and fall back to just the Calico-injected labels —
+            // the namespace is known without the fetch, so namespace-scoped
+            // policies still match. We never fail CNI ADD over enrichment.
+            let (pod_labels, service_account) = fetch_pod_labels_and_sa(&backend, &ids).await;
+            let labels =
+                cni::wep::build_wep_labels(&pod_labels, &ids.namespace, service_account.as_deref());
+
             // Durable network identity: create/patch the WorkloadEndpoint CR with
-            // the CNI-owned fields (idempotent on re-ADD, never clobbers labels).
+            // the CNI-owned spec + metadata.labels (idempotent on re-ADD, merge
+            // patch never clobbers controller-added labels/fields). The labels are
+            // load-bearing: without projectcalico.org/namespace the WEP matches no
+            // namespace-scoped policy and enforcement silently never applies.
             let spec = cni::wep::build_wep_spec(&ids, ip, &host_veth, &node);
-            cni::wep::write_wep(&backend, &ids.namespace, &wep_name, &spec).await?;
+            cni::wep::write_wep(&backend, &ids.namespace, &wep_name, &spec, &labels).await?;
             Ok(ip)
         })?
     };

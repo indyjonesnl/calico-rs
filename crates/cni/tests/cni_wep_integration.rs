@@ -103,8 +103,10 @@ async fn cni_add_is_idempotent_and_del_cleans_up() {
     let ip1 = cni::wep::allocate_or_reuse(&ipam, node, pool, block_size, &handle, &secondary)
         .await
         .expect("first ADD allocation");
+    let pod_labels = BTreeMap::from([("app".to_string(), "web".to_string())]);
+    let labels = cni::wep::build_wep_labels(&pod_labels, &ids.namespace, Some("sa1"));
     let spec1 = cni::wep::build_wep_spec(&ids, ip1, &host_veth, node);
-    cni::wep::write_wep(&backend, namespace, &wep_name, &spec1)
+    cni::wep::write_wep(&backend, namespace, &wep_name, &spec1, &labels)
         .await
         .expect("first WEP write");
 
@@ -120,14 +122,24 @@ async fn cni_add_is_idempotent_and_del_cleans_up() {
     assert_eq!(wep.spec["interfaceName"], host_veth);
     assert_eq!(wep.spec["profiles"][0], "kns.default");
     assert_eq!(wep.spec["orchestrator"], "k8s");
+    // metadata.labels are stamped — without these, namespace-scoped policies
+    // match no endpoint and enforcement silently never applies.
+    assert_eq!(wep.labels["projectcalico.org/namespace"], "default");
+    assert_eq!(wep.labels["projectcalico.org/orchestrator"], "k8s");
+    assert_eq!(wep.labels["projectcalico.org/serviceaccount"], "sa1");
+    assert_eq!(wep.labels["app"], "web");
 
-    // Simulate a controller-owned mutation the CNI plugin must not clobber.
+    // Simulate controller-owned mutations the CNI plugin must not clobber: a spec
+    // field and a metadata label the CNI does not own.
     backend
         .merge_patch(
             ResourceKind::WorkloadEndpoint,
             Some(namespace),
             &wep_name,
-            serde_json::json!({ "spec": { "serviceAccountName": "sa-preserve" } }),
+            serde_json::json!({
+                "metadata": { "labels": { "controller-owned": "keep" } },
+                "spec": { "serviceAccountName": "sa-preserve" },
+            }),
             None,
         )
         .await
@@ -139,7 +151,7 @@ async fn cni_add_is_idempotent_and_del_cleans_up() {
         .expect("second ADD allocation");
     assert_eq!(ip1, ip2, "re-ADD must return the same address");
     let spec2 = cni::wep::build_wep_spec(&ids, ip2, &host_veth, node);
-    cni::wep::write_wep(&backend, namespace, &wep_name, &spec2)
+    cni::wep::write_wep(&backend, namespace, &wep_name, &spec2, &labels)
         .await
         .expect("second WEP write");
 
@@ -171,6 +183,12 @@ async fn cni_add_is_idempotent_and_del_cleans_up() {
         wep2.spec["serviceAccountName"], "sa-preserve",
         "re-ADD must not clobber controller-owned fields"
     );
+    assert_eq!(
+        wep2.labels["controller-owned"], "keep",
+        "re-ADD merge patch must not clobber controller-added labels"
+    );
+    // CNI-owned labels are still present after the re-ADD.
+    assert_eq!(wep2.labels["projectcalico.org/namespace"], "default");
 
     // --- DEL: release IP + delete WEP ---
     let freed = ipam.release_by_handle(&handle).await.expect("release");
