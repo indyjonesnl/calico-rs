@@ -259,7 +259,12 @@ fn corpus() -> Vec<Case> {
     // effect; with no profile matching either, traffic is allowed.
     cases.push(Case {
         name: "open-by-default/nothing-selects-no-profile",
-        anchor: "endpoints.go: unselected endpoint + no profile → open (allow)",
+        anchor: "calc-rs modeling simplification: the engine defaults to Allow when \
+                 nothing decides, relying on the always-present per-namespace \
+                 default-allow profile (kns.<ns>) to match upstream's net behavior. \
+                 NOTE: upstream endpoints.go:770 renders an unconditional default-DENY \
+                 here; open-by-default is supplied by the default-allow profile as \
+                 DATA, not by this code path. See tracker.",
         evaluator: PolicyEvaluator {
             tiers: vec![tier(
                 vec![policy(
@@ -281,7 +286,12 @@ fn corpus() -> Vec<Case> {
     });
     cases.push(Case {
         name: "open-by-default/empty-model",
-        anchor: "endpoints.go: no tiers, no profiles → open (allow)",
+        anchor: "calc-rs modeling simplification: the engine defaults to Allow when \
+                 nothing decides, relying on the always-present per-namespace \
+                 default-allow profile (kns.<ns>) to match upstream's net behavior. \
+                 NOTE: upstream endpoints.go:770 renders an unconditional default-DENY \
+                 here; open-by-default is supplied by the default-allow profile as \
+                 DATA, not by this code path. See tracker.",
         evaluator: PolicyEvaluator::default(),
         subject: labels(&[("app", "db")]),
         direction: Direction::Ingress,
@@ -487,7 +497,12 @@ fn corpus() -> Vec<Case> {
     });
     cases.push(Case {
         name: "pass/nothing-after-no-profile-defaults-open",
-        anchor: "endpoints.go: Pass with no further tier/profile → open-by-default allow",
+        anchor: "calc-rs modeling simplification: the engine defaults to Allow when \
+                 nothing decides, relying on the always-present per-namespace \
+                 default-allow profile (kns.<ns>) to match upstream's net behavior. \
+                 NOTE: upstream endpoints.go:770 renders an unconditional default-DENY \
+                 here; open-by-default is supplied by the default-allow profile as \
+                 DATA, not by this code path. See tracker.",
         evaluator: PolicyEvaluator {
             tiers: vec![tier(
                 vec![policy(
@@ -592,7 +607,12 @@ fn corpus() -> Vec<Case> {
     });
     cases.push(Case {
         name: "profile/no-profile-rule-matches-defaults-open",
-        anchor: "endpoints.go: profiles exhausted with no match → open-by-default allow",
+        anchor: "calc-rs modeling simplification: the engine defaults to Allow when \
+                 nothing decides, relying on the always-present per-namespace \
+                 default-allow profile (kns.<ns>) to match upstream's net behavior. \
+                 NOTE: upstream endpoints.go:770 renders an unconditional default-DENY \
+                 here; open-by-default is supplied by the default-allow profile as \
+                 DATA, not by this code path. See tracker.",
         evaluator: PolicyEvaluator {
             tiers: vec![],
             profiles: vec![policy(
