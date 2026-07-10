@@ -5,8 +5,9 @@
 //! and renders a concise human-readable line for logs.
 //!
 //! Placement note: the plan names `crates/felix/src/flowlogs.rs`, but the decision
-//! logic lives in `calc` (`felix` does not depend on `calc`), so the pure record
-//! model + formatter live here alongside the evaluator. The dataplane-side emitter
+//! logic (`PolicyEvaluator`) lives in `calc`, so the pure record model + formatter
+//! live here co-located with the evaluator they trace. (`felix` does depend on
+//! `calc`, so a thin felix-side re-use is possible later.) The dataplane-side emitter
 //! that attaches these to *observed* packets (supplying real peer IPs and the
 //! `rule_id` from the wire protocol) is a later wiring step; until then `rule_id`
 //! is `None`.
