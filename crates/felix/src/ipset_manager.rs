@@ -180,7 +180,14 @@ impl<P: SetProgrammer> IpSetManager<P> {
     /// programmed into the kernel for the first time or re-touched), so the
     /// caller can mark them [`SetState::programmed`] once the apply succeeds.
     fn render_delta_doc(&self) -> Option<(String, Vec<IpSetId>)> {
-        if self.pending_count() == 0 {
+        // A desired set that has never been created in the kernel needs an
+        // `add set` even with ZERO members and no member deltas (Bug 1): the set
+        // CONTAINER must exist so a policy chain's `ip saddr @<set>` reference
+        // resolves. `pending_count` only tracks element/removal ops, so consult
+        // the un-created desired sets separately or an empty-but-referenced set
+        // would never be programmed.
+        let uncreated = self.sets.values().filter(|s| !s.programmed).count();
+        if self.pending_count() == 0 && uncreated == 0 {
             return None;
         }
         let mut doc = String::new();
@@ -191,7 +198,10 @@ impl<P: SetProgrammer> IpSetManager<P> {
         for (id, state) in &self.sets {
             let adds: Vec<&String> = state.tracker.iter_pending_additions().collect();
             let dels: Vec<&String> = state.tracker.iter_pending_removals().collect();
-            if adds.is_empty() && dels.is_empty() {
+            // Emit the set container when it has member deltas OR has never been
+            // created yet (the empty-but-desired case). An already-created set
+            // with no deltas is skipped, keeping re-apply idempotent.
+            if adds.is_empty() && dels.is_empty() && state.programmed {
                 continue;
             }
             touched.push(id.clone());
@@ -436,6 +446,39 @@ mod tests {
         assert!(doc.contains("10.0.0.1"));
         assert!(doc.contains("10.0.0.2"));
         assert_eq!(mgr.pending_count(), 0, "reconciled after apply");
+    }
+
+    /// Bug 1 regression: a DESIRED set with ZERO members (e.g. an isolation/deny
+    /// rule whose source selector currently matches nothing) must still have its
+    /// set CONTAINER created in the kernel (`add set …`) on first program — even
+    /// with no members and no member deltas. Otherwise a policy chain's
+    /// `ip saddr @<set>` reference targets a non-existent set and nft fails
+    /// ("No such file or directory"), stalling the endpoint apply forever.
+    #[tokio::test]
+    async fn empty_desired_set_is_still_created_on_first_program() {
+        let spy = SpyProgrammer::default();
+        let mut mgr = IpSetManager::new(spy.clone());
+
+        // Zero members, yet the set is desired.
+        mgr.on_update(&update("empty1", IpSetKind::Ip, &[]));
+        mgr.complete_deferred_work().await.unwrap();
+
+        let doc = spy.last();
+        let name = set_name_for("empty1");
+        assert!(
+            doc.contains(&format!("add set {TABLE_FAMILY} {TABLE_NAME} {name}")),
+            "empty-but-desired set must still emit `add set` (the container), doc: {doc:?}"
+        );
+        assert!(doc.contains("type ipv4_addr"), "type decl present: {doc:?}");
+
+        // Idempotence: once created, a re-reconcile with no change is a no-op —
+        // no needless re-`add set`.
+        spy.clear();
+        mgr.complete_deferred_work().await.unwrap();
+        assert!(
+            spy.docs().is_empty(),
+            "already-created empty set must not be reprogrammed"
+        );
     }
 
     #[tokio::test]

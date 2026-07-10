@@ -766,6 +766,69 @@ mod tests {
         assert!(!doc.contains("delete table"));
     }
 
+    /// Bug 2 regression: when an endpoint transitions from profile-governed to
+    /// policy-governed (the open-by-default → NetworkPolicy "GG" case), its
+    /// ingress dispatch chain stops jumping the now-withdrawn profile chain, so
+    /// that profile chain becomes stale and is deleted. The single nft document
+    /// MUST re-flush + re-render the referencing dispatch chain BEFORE issuing
+    /// the `delete chain` — otherwise the delete hits a chain still referenced by
+    /// a live jump ("Device or resource busy") and the apply stalls forever.
+    /// Guarantees the phase order: flush/add-rule (referencing chain) → delete.
+    #[tokio::test]
+    async fn stale_profile_chain_deleted_after_referencing_dispatch_rerendered() {
+        let spy = SpyApplier::default();
+        let mut mgr = EndpointManager::new(spy.clone());
+
+        // Phase 1 — open-by-default: endpoint governed only by the kns profile;
+        // its ingress dispatch chain jumps the profile chain.
+        mgr.on_update(&prof_update("kns.nettest", allow_all_profile()));
+        mgr.on_update(&wep_update(
+            "cali123",
+            endpoint_with_profiles("cali123", &["kns.nettest"]),
+        ));
+        mgr.complete_deferred_work().await.unwrap();
+        assert!(spy
+            .last()
+            .contains("cali-tw-cali123 jump cali-pri-kns.nettest"));
+        spy.clear();
+
+        // Phase 2 — a policy now selects the endpoint on ingress AND the profile
+        // is withdrawn. Ingress becomes policy-governed, so the ingress dispatch
+        // chain drops the profile jump and the ingress profile chain
+        // (cali-pri-kns.nettest) is no longer desired → a pending deletion.
+        let mut ep = endpoint_with_ingress("cali123", "default", &["allow-web"]);
+        ep.profile_ids = vec!["kns.nettest".into()];
+        mgr.on_update(&pol_update("default", "allow-web", allow_from_set("s:web")));
+        mgr.on_update(&ToDataplane::ActiveProfileRemove("kns.nettest".into()));
+        mgr.on_update(&wep_update("cali123", ep));
+        mgr.complete_deferred_work().await.unwrap();
+
+        let doc = spy.last();
+        let del = doc
+            .find("delete chain inet calico cali-pri-kns.nettest")
+            .unwrap_or_else(|| panic!("stale ingress profile chain must be deleted: {doc}"));
+        let flush = doc
+            .find("flush chain inet calico cali-tw-cali123")
+            .unwrap_or_else(|| panic!("referencing dispatch chain must be flushed: {doc}"));
+        let rerule = doc
+            .find("add rule inet calico cali-tw-cali123 jump cali-pi-default-allow-web")
+            .unwrap_or_else(|| {
+                panic!("dispatch chain must be re-rendered with the policy jump: {doc}")
+            });
+        assert!(
+            flush < del,
+            "referencing chain flushed BEFORE the profile delete: {doc}"
+        );
+        assert!(
+            rerule < del,
+            "referencing chain rules re-added BEFORE the profile delete: {doc}"
+        );
+        assert!(
+            !doc.contains("add rule inet calico cali-tw-cali123 jump cali-pri-kns.nettest"),
+            "ingress dispatch must not re-add the stale profile jump: {doc}"
+        );
+    }
+
     #[tokio::test]
     async fn failed_apply_retains_state_for_retry() {
         let spy = SpyApplier::default();
