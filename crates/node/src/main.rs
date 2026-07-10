@@ -1,7 +1,7 @@
 //! `calico-rs-node` — the per-node agent, run as a privileged DaemonSet (the
 //! analog of upstream `calico-node`). On startup it installs the CNI plugin onto
 //! the host (binary + conflist + a kubeconfig for the plugin to reach the API
-//! server), records the node name, then runs the felix reconcile loop.
+//! server), records the node name, then runs the felix policy dataplane.
 //!
 //! Host paths are mounted into the container by the DaemonSet:
 //!   /host/opt/cni/bin        <- node's /opt/cni/bin
@@ -13,7 +13,6 @@
 //!   CNI_NET_DIR           host CNI conf dir mount (default /host/etc/cni/net.d)
 //!   CNI_BIN_DIR           host CNI bin dir mount  (default /host/opt/cni/bin)
 //!   CALICO_NETWORK_NAME   CNI network name (default "k8s-pod-network")
-//!   FELIX_POLICY_NAMESPACE reconcile namespace for the first-cut policy loop
 
 use std::time::Duration;
 
@@ -77,9 +76,12 @@ async fn run() -> Result<(), String> {
     println!("calico-rs-node: starting NAT-outgoing reconcile");
     tokio::spawn(felix::nat::run(nat_backend, Duration::from_secs(10)));
 
-    let namespace = env_or("FELIX_POLICY_NAMESPACE", "default");
-    println!("calico-rs-node: starting felix policy reconcile loop (namespace={namespace})");
-    felix::reconcile::run(backend, namespace, Duration::from_secs(10)).await;
+    // Event-driven policy dataplane: watches all policy-relevant kinds across
+    // every namespace and drives datastore → calc → nftables (IP sets + policy
+    // chains) via the felix InternalDataplane. Replaces the earlier
+    // single-namespace 10s poll loop (`felix::reconcile::run`).
+    println!("calico-rs-node: starting felix policy dataplane (node={nodename}, all namespaces)");
+    felix::policy_agent::run_policy_dataplane(backend, nodename).await?;
     Ok(())
 }
 
