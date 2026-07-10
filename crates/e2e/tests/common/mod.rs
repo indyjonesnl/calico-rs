@@ -140,6 +140,32 @@ where
     }
 }
 
+/// Like [`poll_until`], but on success returns how long convergence actually
+/// took (`Ok(elapsed)`), and on timeout returns the bound itself (`Err(timeout)`)
+/// — used to both assert *and report* a propagation-latency SC (e.g. the US2
+/// policy-update-latency check), rather than just a bool.
+pub async fn poll_until_with_latency<F, Fut>(
+    timeout: Duration,
+    interval: Duration,
+    mut cond: F,
+) -> Result<Duration, Duration>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let start = tokio::time::Instant::now();
+    let deadline = start + timeout;
+    loop {
+        if cond().await {
+            return Ok(start.elapsed());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(timeout);
+        }
+        tokio::time::sleep(interval).await;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Namespace / pod hygiene
 // ---------------------------------------------------------------------------
@@ -271,6 +297,73 @@ pub fn busybox_pod(name: &str, ns: &str, node: &str) -> Pod {
                 name: "probe".to_string(),
                 image: Some("busybox:1.36".to_string()),
                 command: Some(vec!["sleep".to_string(), "3600".to_string()]),
+                ..Default::default()
+            }],
+            node_selector: Some(node_selector),
+            restart_policy: Some("Never".to_string()),
+            termination_grace_period_seconds: Some(2),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+/// Like [`busybox_pod`], plus the given extra labels (e.g. `role=client` for
+/// the US2 label-selector policy scenarios) on top of the base `app` label.
+pub fn busybox_pod_with_labels(
+    name: &str,
+    ns: &str,
+    node: &str,
+    extra_labels: &[(&str, &str)],
+) -> Pod {
+    let mut pod = busybox_pod(name, ns, node);
+    if let Some(labels) = pod.metadata.labels.as_mut() {
+        for (k, v) in extra_labels {
+            labels.insert((*k).to_string(), (*v).to_string());
+        }
+    }
+    pod
+}
+
+/// A minimal TCP server pod: `busybox httpd` listening on `port`, pinned to
+/// `node`, labeled `app=calico-rs-e2e` plus `extra_labels`. A real listening
+/// socket (rather than `sleep`) so ingress NetworkPolicy can be probed with a
+/// TCP connect (`nc -z`) — policy is L3/L4, so ICMP wouldn't exercise the
+/// right path.
+pub fn http_server_pod(
+    name: &str,
+    ns: &str,
+    node: &str,
+    port: u16,
+    extra_labels: &[(&str, &str)],
+) -> Pod {
+    let mut labels = BTreeMap::new();
+    labels.insert("app".to_string(), "calico-rs-e2e".to_string());
+    for (k, v) in extra_labels {
+        labels.insert((*k).to_string(), (*v).to_string());
+    }
+
+    let mut node_selector = BTreeMap::new();
+    node_selector.insert("kubernetes.io/hostname".to_string(), node.to_string());
+
+    Pod {
+        metadata: ObjectMeta {
+            name: Some(name.to_string()),
+            namespace: Some(ns.to_string()),
+            labels: Some(labels),
+            ..Default::default()
+        },
+        spec: Some(PodSpec {
+            containers: vec![Container {
+                name: "server".to_string(),
+                image: Some("busybox:1.36".to_string()),
+                command: Some(vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    format!(
+                        "mkdir -p /www && echo ok > /www/index.html && httpd -f -p {port} -h /www"
+                    ),
+                ]),
                 ..Default::default()
             }],
             node_selector: Some(node_selector),
@@ -460,6 +553,96 @@ pub async fn exec_ping(
     )
     .await
     .map(|_| ())
+}
+
+/// `nc -z` (TCP connect probe, zero-I/O) from `pod` to `target_ip:port`. `Ok(())`
+/// if the connection succeeded, `Err` otherwise (refused, dropped, or timed
+/// out) — used instead of [`exec_ping`] where the path being exercised is
+/// L3/L4 port-scoped (NetworkPolicy), which ICMP can't observe.
+pub async fn exec_tcp_connect(
+    client: &Client,
+    ns: &str,
+    pod: &str,
+    target_ip: &str,
+    port: u16,
+    timeout: Duration,
+) -> Result<(), String> {
+    let port_s = port.to_string();
+    exec_cmd(
+        client,
+        ns,
+        pod,
+        &["nc", "-w", "3", "-z", target_ip, &port_s],
+        timeout,
+    )
+    .await
+    .map(|_| ())
+}
+
+// ---------------------------------------------------------------------------
+// Policy (NetworkPolicy CR) helpers
+// ---------------------------------------------------------------------------
+
+/// Create-or-replace a Calico `NetworkPolicy` CR named `name` in `ns` with the
+/// given JSON spec (matching [`apis::NetworkPolicySpec`]'s wire shape): creates
+/// it if absent, otherwise does a full-spec CAS replace against its current
+/// revision — used to both apply the initial US2 allow/deny policy and later
+/// edit it in place (for the policy-update-latency measurement).
+pub async fn upsert_network_policy(
+    backend: &KddBackend,
+    ns: &str,
+    name: &str,
+    spec: serde_json::Value,
+) -> Result<(), String> {
+    match backend
+        .get(ResourceKind::NetworkPolicy, Some(ns), name)
+        .await
+    {
+        Ok(Some(existing)) => backend
+            .update(
+                ResourceKind::NetworkPolicy,
+                Some(ns),
+                name,
+                spec,
+                &existing.raw_revision,
+            )
+            .await
+            .map(|_| ())
+            .map_err(|e| format!("update NetworkPolicy {ns}/{name}: {e}")),
+        Ok(None) => backend
+            .create(ResourceKind::NetworkPolicy, Some(ns), name, spec)
+            .await
+            .map(|_| ())
+            .map_err(|e| format!("create NetworkPolicy {ns}/{name}: {e}")),
+        Err(e) => Err(format!("get NetworkPolicy {ns}/{name}: {e}")),
+    }
+}
+
+/// Best-effort pre-test delete of NetworkPolicy `name` in `ns` (a no-op if
+/// absent) — part of the hermetic-namespace idiom: a leftover policy from an
+/// aborted prior run must not leak into this run's baseline (open-by-default)
+/// assertion.
+pub async fn delete_network_policy_if_exists(
+    backend: &KddBackend,
+    ns: &str,
+    name: &str,
+) -> Result<(), String> {
+    match backend
+        .get(ResourceKind::NetworkPolicy, Some(ns), name)
+        .await
+    {
+        Ok(Some(existing)) => backend
+            .delete(
+                ResourceKind::NetworkPolicy,
+                Some(ns),
+                name,
+                &existing.raw_revision,
+            )
+            .await
+            .map_err(|e| format!("delete NetworkPolicy {ns}/{name}: {e}")),
+        Ok(None) => Ok(()),
+        Err(e) => Err(format!("get NetworkPolicy {ns}/{name}: {e}")),
+    }
 }
 
 // ---------------------------------------------------------------------------
