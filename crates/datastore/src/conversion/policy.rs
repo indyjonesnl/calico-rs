@@ -68,9 +68,25 @@ pub const K8S_NETWORK_POLICY_ORDER: f64 = 1000.0;
 const DEFAULT_PROTOCOL: &str = "TCP";
 
 /// Project a Kubernetes [`NetworkPolicy`] into a Calico [`NetworkPolicySpec`].
-/// The Calico NetworkPolicy is namespaced by the resource's own metadata; the
-/// projected spec carries no namespace (upstream scopes via the resource, not the
-/// selector).
+///
+/// This function does **not** apply namespace confinement: the emitted
+/// top-level `selector` and rule-peer selectors match across **all**
+/// namespaces, not just the policy's own. Upstream does not scope a converted
+/// K8s NetworkPolicy at the resource level either — namespace-scoping is
+/// injected as a *later* pipeline stage, by rewriting the selector text with a
+/// `projectcalico.org/namespace == '<ns>'` term (`libcalico-go`
+/// `updateprocessors/rules.go` `getEndpointSelector` /
+/// `ConvertNetworkPolicyV3ToV1Value`).
+///
+/// TODO(namespace-scoping): a future update-processor stage in this crate must
+/// reproduce that rewrite using [`super::LABEL_NAMESPACE`]
+/// (`projectcalico.org/namespace`), confining both the top-level `selector`
+/// and any rule peer whose `namespace_selector` is `None` (which — per K8s
+/// `NetworkPolicy` semantics — means "the policy's own namespace", not "any
+/// namespace") to the policy's namespace. Until that stage exists, a converted
+/// K8s NetworkPolicy produced by this function applies across all namespaces —
+/// an isolation gap — so callers MUST NOT feed its output directly into the
+/// dataplane without that confinement applied.
 pub fn k8s_network_policy_to_calico(np: &NetworkPolicy) -> NetworkPolicySpec {
     match np.spec.as_ref() {
         Some(spec) => k8s_network_policy_spec_to_calico(spec),

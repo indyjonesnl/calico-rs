@@ -18,6 +18,7 @@
 //!   annotation used to round-trip resource metadata through CRD storage.
 
 pub mod policy;
+pub use policy::k8s_network_policy_to_calico;
 
 use std::collections::BTreeMap;
 
