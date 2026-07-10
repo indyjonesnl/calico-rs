@@ -7,6 +7,8 @@
 //! initial list snapshot, then `InSync`; subsequent changes are incremental
 //! `Apply`/`Delete` updates.
 
+use std::collections::BTreeMap;
+
 use futures::{Stream, StreamExt, TryStreamExt};
 use kube::api::DynamicObject;
 use kube::runtime::watcher::{self, watcher};
@@ -48,6 +50,12 @@ pub enum SyncerEvent {
         spec: serde_json::Value,
         revision: Revision,
         update_type: UpdateType,
+        /// The resource's own `metadata.labels` (empty map if absent). This is
+        /// the WorkloadEndpoint/NetworkSet/etc.'s own label set that policy
+        /// selectors match against — needed by the felix calc graph
+        /// (`ResourceUpdate`), but otherwise inert: the v1-model purpose-built
+        /// syncers (`syncers::to_v1_events`) do not read it.
+        labels: BTreeMap<String, String>,
     },
 }
 
@@ -102,6 +110,7 @@ fn update(kind: ResourceKind, obj: DynamicObject, update_type: UpdateType) -> Sy
         .get("spec")
         .cloned()
         .unwrap_or(serde_json::Value::Object(Default::default()));
+    let labels = obj.metadata.labels.clone().unwrap_or_default();
     SyncerEvent::Update {
         key: Key::Resource {
             kind,
@@ -111,5 +120,59 @@ fn update(kind: ResourceKind, obj: DynamicObject, update_type: UpdateType) -> Sy
         spec,
         revision,
         update_type,
+        labels,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kube::api::{ObjectMeta, TypeMeta};
+
+    fn dynamic_object(labels: Option<BTreeMap<String, String>>) -> DynamicObject {
+        DynamicObject {
+            types: Some(TypeMeta {
+                api_version: "projectcalico.org/v3".to_string(),
+                kind: "WorkloadEndpoint".to_string(),
+            }),
+            metadata: ObjectMeta {
+                name: Some("wep1".to_string()),
+                namespace: Some("ns1".to_string()),
+                resource_version: Some("42".to_string()),
+                labels,
+                ..Default::default()
+            },
+            data: serde_json::json!({ "spec": { "interfaceName": "cali123" } }),
+        }
+    }
+
+    #[test]
+    fn update_surfaces_metadata_labels() {
+        let mut labels = BTreeMap::new();
+        labels.insert("app".to_string(), "web".to_string());
+        let obj = dynamic_object(Some(labels.clone()));
+
+        let ev = update(ResourceKind::WorkloadEndpoint, obj, UpdateType::New);
+
+        match ev {
+            SyncerEvent::Update {
+                labels: got_labels, ..
+            } => assert_eq!(got_labels, labels),
+            other => panic!("expected Update, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn update_defaults_labels_to_empty_map_when_absent() {
+        let obj = dynamic_object(None);
+
+        let ev = update(ResourceKind::WorkloadEndpoint, obj, UpdateType::New);
+
+        match ev {
+            SyncerEvent::Update {
+                labels: got_labels, ..
+            } => assert!(got_labels.is_empty()),
+            other => panic!("expected Update, got {other:?}"),
+        }
     }
 }

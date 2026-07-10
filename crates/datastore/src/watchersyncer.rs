@@ -152,6 +152,7 @@ mod tests {
             spec: json!({}),
             revision: 1,
             update_type: ut,
+            labels: Default::default(),
         }
     }
 

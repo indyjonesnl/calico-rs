@@ -153,6 +153,11 @@ pub fn node_status_syncer_kinds() -> Vec<(ResourceKind, Option<String>)> {
 fn to_v1_events(ev: SyncerEvent) -> Vec<SyncerV1Event> {
     let (key, spec, update_type) = match ev {
         SyncerEvent::Status(s) => return vec![SyncerV1Event::Status(s)],
+        // `labels` (the resource's own metadata.labels) is intentionally
+        // dropped here: the v1 update-processor path (`process`/`process_keys`)
+        // works purely off the v3 spec and does not consume labels. The felix
+        // calc-graph path (not this syncer) is what needs them — see
+        // `SyncerEvent::Update`'s field docs.
         SyncerEvent::Update {
             key,
             spec,
@@ -240,6 +245,7 @@ mod tests {
             spec,
             revision: 1,
             update_type,
+            labels: Default::default(),
         }
     }
 

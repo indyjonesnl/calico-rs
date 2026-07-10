@@ -448,6 +448,10 @@ impl Backend for KddBackend {
                         spec,
                         revision,
                         update_type,
+                        // `WatchEvent` (this trait's generic KVPair-based watch
+                        // event) has no label field; labels are consumed by the
+                        // felix calc-graph path, not this generic backend watch.
+                        ..
                     }) => Some(Ok(WatchEvent {
                         kv: KVPair::with_revision(key, spec, revision),
                         event_type: update_type,
