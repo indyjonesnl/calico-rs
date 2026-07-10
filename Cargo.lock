@@ -243,6 +243,7 @@ dependencies = [
  "proto",
  "serde",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]

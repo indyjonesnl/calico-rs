@@ -33,9 +33,13 @@
 //! * **Not modeled.** `serviceAccountSelector`/`serviceAccounts` and a rule
 //!   `notSelector` are absent from [`apis::EntityRule`], so upstream's
 //!   `saSelector` combination and the `notSelector != ""` scoping trigger have
-//!   no input to act on here. `global()` in a rule `namespaceSelector` is not in
-//!   `calc`'s selector grammar; it fails to parse and yields no namespace
-//!   selector (documented divergence — `all()` *is* supported and translated).
+//!   no input to act on here. `global()`, `contains`, `starts with` and
+//!   `ends with` in a `selector`/`namespaceSelector` are not in `calc`'s
+//!   selector grammar (`all()` *is* supported and translated). When such an
+//!   operator makes a **non-empty** `namespace_selector` unparseable, the
+//!   fold fails CLOSED: the whole peer selector becomes the never-match
+//!   sentinel `! all()` (deny-by-omission) rather than silently dropping
+//!   namespace confinement and matching every endpoint cluster-wide.
 
 use apis::{EntityRule, NetworkPolicySpec, Rule};
 
@@ -46,6 +50,13 @@ const LABEL_NAMESPACE: &str = "projectcalico.org/namespace";
 /// Prefix under which a namespace's labels are projected onto endpoints
 /// (`conversion.NamespaceLabelPrefix`).
 const NAMESPACE_LABEL_PREFIX: &str = "pcns.";
+/// Sentinel selector that never matches any endpoint (`Not(All)`). Used to
+/// fail CLOSED when a non-empty `selector`/`namespaceSelector` can't be
+/// parsed by `calc`'s grammar (e.g. `global()`, `contains`, `starts with`,
+/// `ends with`): rather than dropping the unparseable selector and folding
+/// down to an unconfined (or unconditionally matching) peer selector, the
+/// whole peer becomes a deny-by-omission never-match.
+const NEVER_MATCH_SELECTOR: &str = "! all()";
 
 /// Scope a **namespaced** `NetworkPolicy` spec to `namespace`, returning a copy
 /// whose applies-to `selector` is confined to the namespace and whose every
@@ -111,8 +122,16 @@ fn scope_gnp_selector(selector: &str, namespace_selector: &str) -> String {
     }
     let prefixed = match Selector::parse(namespace_selector) {
         Ok(s) => s.prefix_keys(NAMESPACE_LABEL_PREFIX).to_string(),
-        // Upstream logs and drops an unparseable selector; leave applies-to as-is.
-        Err(_) => return selector.to_string(),
+        // Fail CLOSED: an unparseable non-empty namespaceSelector must not
+        // fall back to an unconfined applies-to selector (which would match
+        // every endpoint cluster-wide). Force a never-match instead.
+        Err(_) => {
+            tracing::warn!(
+                selector = namespace_selector,
+                "GNP namespaceSelector failed to parse; failing closed (never-match)"
+            );
+            return NEVER_MATCH_SELECTOR.to_string();
+        }
     };
     let combined = if selector.is_empty() {
         prefixed
@@ -184,7 +203,19 @@ fn get_endpoint_selector(
                 .to_string()
                 .replace("all()", "has(projectcalico.org/namespace)")
                 .replace("global()", "!has(projectcalico.org/namespace)"),
-            Err(_) => String::new(),
+            // Fail CLOSED: an unparseable non-empty rule namespaceSelector
+            // (e.g. `global()`, `contains`, `starts with`, `ends with` — not
+            // in calc's grammar) must not fall back to an unconfined or
+            // empty selector, which would let the peer match every endpoint
+            // in every namespace. Force the whole folded peer to never-match
+            // instead of just dropping the namespace confinement.
+            Err(_) => {
+                tracing::warn!(
+                    selector = namespace_selector,
+                    "rule namespaceSelector failed to parse; failing closed (never-match)"
+                );
+                return NEVER_MATCH_SELECTOR.to_string();
+            }
         }
     } else if let Some(ns) = ns.filter(|n| !n.is_empty()) {
         format!("{LABEL_NAMESPACE} == '{ns}'")
@@ -329,6 +360,70 @@ mod tests {
         );
     }
 
+    // ---- fail-closed on unparseable non-empty selectors (T059 review fix) ----
+    // `global()`, `contains`, `starts with`, `ends with` are not in calc's
+    // selector grammar and fail to parse. A non-empty namespaceSelector/selector
+    // that fails to parse must never fold down to an unconfined (or
+    // unconditionally-matching) peer selector — it must become the
+    // deny-by-omission never-match sentinel instead.
+
+    #[test]
+    fn rule_namespace_selector_unparseable_fails_closed_to_never_match() {
+        let spec = np_with_source(EntityRule {
+            // A selector that WOULD match plenty of endpoints if the fold
+            // failed open (i.e. if namespaceSelector were simply dropped).
+            selector: Some("app == 'web'".into()),
+            namespace_selector: Some("global()".into()), // unparseable by calc
+            ..Default::default()
+        });
+        let scoped = scope_network_policy(&spec, "prod");
+
+        // The folded peer selector is the never-match sentinel...
+        assert_eq!(
+            scoped.ingress[0].source.selector.as_deref(),
+            Some(NEVER_MATCH_SELECTOR)
+        );
+        assert!(scoped.ingress[0].source.namespace_selector.is_none());
+
+        // ...which evaluates to matching NOTHING, including an endpoint that
+        // the raw, un-confined `app == 'web'` selector would have matched
+        // (in any namespace) had the fold failed open instead.
+        let ev = network_policy_to_eval(&scoped).unwrap();
+        let peer_selector = ev.ingress[0]
+            .peer_selector
+            .as_ref()
+            .expect("never-match sentinel still parses to a selector");
+        let would_have_matched_if_open = labels(&[("app", "web"), (LABEL_NAMESPACE, "prod")]);
+        assert!(
+            !peer_selector.matches(&would_have_matched_if_open),
+            "unparseable namespaceSelector must fail CLOSED (never-match), not open"
+        );
+        let foreign_ns = labels(&[("app", "web"), (LABEL_NAMESPACE, "other-ns")]);
+        assert!(
+            !peer_selector.matches(&foreign_ns),
+            "unparseable namespaceSelector must fail CLOSED (never-match), not open"
+        );
+    }
+
+    #[test]
+    fn rule_namespace_selector_parseable_is_unaffected_by_fail_closed_change() {
+        // A normal, parseable namespaceSelector must fold exactly as before —
+        // never the never-match sentinel.
+        let spec = np_with_source(EntityRule {
+            namespace_selector: Some("env == 'prod'".into()),
+            ..Default::default()
+        });
+        let scoped = scope_network_policy(&spec, "prod");
+        assert_eq!(
+            scoped.ingress[0].source.selector.as_deref(),
+            Some("pcns.env == \"prod\"")
+        );
+        assert_ne!(
+            scoped.ingress[0].source.selector.as_deref(),
+            Some(NEVER_MATCH_SELECTOR)
+        );
+    }
+
     // ---- GlobalNetworkPolicy (ConvertGlobalNetworkPolicyV3ToV1Value) ----
 
     #[test]
@@ -377,6 +472,33 @@ mod tests {
             scoped.ingress[0].source.selector.as_deref(),
             Some("app == 'web'")
         );
+    }
+
+    // ---- GNP fail-closed on unparseable non-empty selectors (T059 review fix) ----
+
+    #[test]
+    fn gnp_spec_namespace_selector_unparseable_fails_closed_to_never_match() {
+        let spec = NetworkPolicySpec {
+            selector: "role == 'db'".into(),
+            ..Default::default()
+        };
+        let scoped = scope_global_network_policy(&spec, "global()"); // unparseable
+        assert_eq!(scoped.selector, NEVER_MATCH_SELECTOR);
+    }
+
+    #[test]
+    fn gnp_rule_namespace_selector_unparseable_fails_closed_to_never_match() {
+        let spec = np_with_source(EntityRule {
+            selector: Some("app == 'web'".into()),
+            namespace_selector: Some("global()".into()), // unparseable
+            ..Default::default()
+        });
+        let scoped = scope_global_network_policy(&spec, "");
+        assert_eq!(
+            scoped.ingress[0].source.selector.as_deref(),
+            Some(NEVER_MATCH_SELECTOR)
+        );
+        assert!(scoped.ingress[0].source.namespace_selector.is_none());
     }
 
     // ---- end-to-end cross-namespace isolation (the bug T059 closes) ----
