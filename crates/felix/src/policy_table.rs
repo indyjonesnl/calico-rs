@@ -509,16 +509,31 @@ mod tests {
             "empty-but-referenced set must still be declared: {doc}"
         );
 
-        // Policy chain with the resolved @set match.
+        // Policy chain with the resolved @set match. ALLOW is NON-terminal: it sets
+        // the accept mark and returns (so the other direction still evaluates), and
+        // does NOT render a terminal `accept`.
         assert!(doc.contains("add chain inet calico cali-pi-default-allow-web"));
         assert!(doc.contains(&format!(
-            "add rule inet calico cali-pi-default-allow-web ip saddr @{web} accept"
+            "add rule inet calico cali-pi-default-allow-web ip saddr @{web} meta mark set meta mark or 0x01000000 return"
         )));
+        assert!(
+            !doc.contains(&format!(
+                "add rule inet calico cali-pi-default-allow-web ip saddr @{web} accept"
+            )),
+            "ALLOW must not render a terminal accept: {doc}"
+        );
 
-        // Dispatch chain: policy jump then default deny, NO profile jump.
+        // Dispatch chain: clear accept mark on entry, jump the policy, return if the
+        // policy allowed, then default deny. NO profile jump (policy selected).
         let tw = "cali-tw-cali123";
         assert!(doc.contains(&format!(
+            "add rule inet calico {tw} meta mark set meta mark and 0xfeffffff"
+        )));
+        assert!(doc.contains(&format!(
             "add rule inet calico {tw} jump cali-pi-default-allow-web"
+        )));
+        assert!(doc.contains(&format!(
+            "add rule inet calico {tw} meta mark & 0x01000000 == 0x01000000 return"
         )));
         assert!(doc.contains(&format!(
             "add rule inet calico {tw} drop comment \"default deny (ingress)\""
@@ -686,23 +701,72 @@ mod tests {
         mgr.complete_deferred_work().await.unwrap();
         let doc = spy.last();
 
-        // Ingress profile chain rendered with an accept (open-by-default).
+        // Ingress profile chain: open-by-default ALLOW sets the accept mark + returns
+        // (non-terminal), NOT a terminal accept.
         assert!(doc.contains("add chain inet calico cali-pri-kns.nettest"));
-        assert!(doc.contains("add rule inet calico cali-pri-kns.nettest accept"));
+        assert!(doc.contains(
+            "add rule inet calico cali-pri-kns.nettest meta mark set meta mark or 0x01000000 return"
+        ));
+        assert!(
+            !doc.contains("add rule inet calico cali-pri-kns.nettest accept"),
+            "profile ALLOW must not render a terminal accept: {doc}"
+        );
 
-        // The dispatch chain jumps the profile chain BEFORE its drop.
+        // The dispatch chain jumps the profile chain BEFORE its drop, with a
+        // return-if-accepted in between.
         let tw = "cali-tw-cali123";
         let jump = doc
             .find(&format!(
                 "add rule inet calico {tw} jump cali-pri-kns.nettest"
             ))
             .expect("dispatch jumps to ingress profile chain");
+        let ret = doc
+            .find(&format!(
+                "add rule inet calico {tw} meta mark & 0x01000000 == 0x01000000 return"
+            ))
+            .expect("return-if-accepted after the profile jump");
         let drop = doc
             .find(&format!(
                 "add rule inet calico {tw} drop comment \"default deny (ingress)\""
             ))
             .expect("dispatch still has final default deny");
-        assert!(jump < drop, "profile jump precedes the default deny");
+        assert!(jump < ret, "return-if-accepted follows the profile jump");
+        assert!(ret < drop, "default deny is last");
+    }
+
+    /// The `cali-forward` base chain jumps BOTH direction chains for a local
+    /// endpoint (egress on `iifname`, ingress on `oifname`) and relies on its
+    /// fall-through `policy accept` — no per-endpoint terminal accept. This is the
+    /// structural guarantee that both directions are evaluated for a forwarded packet.
+    #[tokio::test]
+    async fn forward_chain_jumps_both_directions_and_falls_through() {
+        let spy = SpyApplier::default();
+        let mut mgr = PolicyTableManager::new(spy.clone());
+        mgr.on_update(&prof_update("kns.nettest", allow_all_profile()));
+        mgr.on_update(&wep_update(
+            "cali123",
+            endpoint_with_profiles("cali123", &["kns.nettest"]),
+        ));
+        mgr.complete_deferred_work().await.unwrap();
+        let doc = spy.last();
+
+        // Base chain declared with the fall-through accept policy.
+        assert!(doc.contains(
+            "add chain inet calico cali-forward { type filter hook forward priority 0; policy accept; }"
+        ));
+        // Egress (from the pod) on iifname, ingress (to the pod) on oifname.
+        assert!(doc.contains(
+            "add rule inet calico cali-forward iifname \"cali123\" jump cali-fw-cali123"
+        ));
+        assert!(doc.contains(
+            "add rule inet calico cali-forward oifname \"cali123\" jump cali-tw-cali123"
+        ));
+        // The base chain itself never issues a terminal accept — acceptance is only
+        // the fall-through after BOTH direction chains returned.
+        assert!(
+            !doc.contains("add rule inet calico cali-forward accept"),
+            "cali-forward must accept only via fall-through, not a terminal rule: {doc}"
+        );
     }
 
     #[tokio::test]

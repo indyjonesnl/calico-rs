@@ -11,7 +11,25 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-/// A rule verdict.
+/// The "accept" mark bit — Calico felix's `MarkAccept` (here a fixed bit; upstream's
+/// is config-driven). This bit is the crux of correct forward-path policy semantics.
+///
+/// A forwarded pod→pod packet is steered by `cali-forward` through BOTH direction
+/// chains — `iifname <src> jump cali-fw-<src>` (source egress) AND
+/// `oifname <dst> jump cali-tw-<dst>` (dest ingress). If an ALLOW rendered as a
+/// terminal `accept`, the first direction to allow would end the whole traversal and
+/// the other direction's policy would never be evaluated. So an ALLOW instead SETs
+/// this bit and `return`s (non-terminal, [`Verdict::SetAcceptMarkReturn`]); a DENY is
+/// the only terminal verdict (`drop`). A packet is truly accepted only via
+/// `cali-forward`'s fall-through, after surviving (being `return`ed by) every
+/// applicable direction chain. Each dispatch chain [`Verdict::ClearAcceptMark`]s the
+/// bit on entry so a mark left set by the other direction's chain cannot leak in.
+pub const ACCEPT_MARK: u32 = 0x0100_0000;
+
+/// A rule verdict (the trailing statement of an nft rule). Most are true verdicts;
+/// [`Verdict::SetAcceptMarkReturn`] is a mark-set + `return` compound and
+/// [`Verdict::ClearAcceptMark`] is a bare mangle statement (no verdict → the packet
+/// falls through to the next rule) — both encode the accept-mark policy semantics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     Accept,
@@ -21,6 +39,15 @@ pub enum Verdict {
     Goto(String),
     /// Source NAT to the outbound interface's address (NAT postrouting).
     Masquerade,
+    /// Calico's non-terminal ALLOW: set the [`ACCEPT_MARK`] bit, then `return` to the
+    /// calling (dispatch) chain — so the OTHER direction's chain still runs. Renders
+    /// `meta mark set meta mark or 0x01000000 return`.
+    SetAcceptMarkReturn,
+    /// Clear the [`ACCEPT_MARK`] bit (a mangle statement with no verdict, so control
+    /// falls through to the next rule). Emitted at a dispatch chain's entry so a mark
+    /// set while the same packet traversed the other direction's chain cannot cause a
+    /// premature return here. Renders `meta mark set meta mark and 0xfeffffff`.
+    ClearAcceptMark,
 }
 
 impl Verdict {
@@ -32,6 +59,12 @@ impl Verdict {
             Verdict::Jump(c) => format!("jump {c}"),
             Verdict::Goto(c) => format!("goto {c}"),
             Verdict::Masquerade => "masquerade".into(),
+            Verdict::SetAcceptMarkReturn => {
+                format!("meta mark set meta mark or 0x{ACCEPT_MARK:08x} return")
+            }
+            Verdict::ClearAcceptMark => {
+                format!("meta mark set meta mark and 0x{:08x}", !ACCEPT_MARK)
+            }
         }
     }
 }
@@ -57,6 +90,10 @@ pub enum NftMatch {
     SrcSet(String),
     /// `ip daddr @<set>`.
     DestSet(String),
+    /// `meta mark & <ACCEPT_MARK> == <ACCEPT_MARK>` — the [`ACCEPT_MARK`] bit is set,
+    /// i.e. a policy/profile chain jumped so far in this direction ALLOWed. A
+    /// dispatch chain uses this to `return` as soon as one direction allows.
+    AcceptMarkSet,
 }
 
 impl NftMatch {
@@ -71,6 +108,9 @@ impl NftMatch {
             NftMatch::OutInterface(o) => format!("oifname \"{o}\""),
             NftMatch::SrcSet(s) => format!("ip saddr @{s}"),
             NftMatch::DestSet(s) => format!("ip daddr @{s}"),
+            NftMatch::AcceptMarkSet => {
+                format!("meta mark & 0x{ACCEPT_MARK:08x} == 0x{ACCEPT_MARK:08x}")
+            }
         }
     }
 }
@@ -491,5 +531,27 @@ mod tests {
             NftMatch::SrcAddr("1.2.3.0/24".into()).render(),
             "ip saddr 1.2.3.0/24"
         );
+    }
+
+    #[test]
+    fn accept_mark_verdicts_and_match_render() {
+        // ALLOW is non-terminal: set the mark then return (NOT a bare `accept`).
+        assert_eq!(
+            Verdict::SetAcceptMarkReturn.render(),
+            "meta mark set meta mark or 0x01000000 return"
+        );
+        // Entry clear uses the complement mask and has no verdict (falls through).
+        assert_eq!(
+            Verdict::ClearAcceptMark.render(),
+            "meta mark set meta mark and 0xfeffffff"
+        );
+        // The "did a chain allow?" test.
+        assert_eq!(
+            NftMatch::AcceptMarkSet.render(),
+            "meta mark & 0x01000000 == 0x01000000"
+        );
+        // A return-if-accepted rule composes the match with a plain return.
+        let rule = NftRule::new(Verdict::Return).with(NftMatch::AcceptMarkSet);
+        assert_eq!(rule.render(), "meta mark & 0x01000000 == 0x01000000 return");
     }
 }

@@ -28,21 +28,27 @@
 //!
 //! - **Per-policy chain** `cali-pi-<tier>-<name>` (ingress) / `cali-po-<tier>-<name>`
 //!   (egress): the translated rules only. A rule falls through (implicit `return`)
-//!   when it does not match. Action mapping: `Allow→accept`, `Deny→drop`,
-//!   `Pass→return`, `Log→`(skipped — no terminal verdict emitted yet).
+//!   when it does not match. Action mapping reproduces Calico's **accept-mark**
+//!   pattern so an ALLOW is NON-terminal: `Allow→set` the accept mark + `return`,
+//!   `Deny→drop`, `Pass→return`, `Log→`(skipped). See [`map_action`] /
+//!   [`crate::nft::ACCEPT_MARK`].
 //! - **Per-profile chain** `cali-pri-<id>` (ingress) / `cali-pro-<id>` (egress):
-//!   the translated profile rules, with NO trailing drop. Calico's open-by-default
-//!   is the per-namespace `kns.<ns>` allow-all profile.
+//!   the translated profile rules (same accept-mark ALLOW), NO trailing drop.
+//!   Calico's open-by-default is the per-namespace `kns.<ns>` allow-all profile.
 //! - **Per-endpoint dispatch chain** `cali-tw-<iface>` (to-workload / ingress) and
-//!   `cali-fw-<iface>` (from-workload / egress): `jump` to each of the endpoint's
-//!   tier policies in order; then, **only if no policy selects the endpoint in that
-//!   direction**, `jump` to its profiles (the open-by-default fallback); then a
-//!   terminal `drop` (Calico's per-endpoint default-deny). A policy-selected
-//!   endpoint ends at the end-of-policy drop and does NOT fall through to its
-//!   profiles — gated per-direction (ingress/egress independent).
+//!   `cali-fw-<iface>` (from-workload / egress): **clear the accept mark on entry**;
+//!   `jump` each of the endpoint's tier policies in order, each followed by a
+//!   `return`-if-accept-mark-set; then, **only if no policy selects the endpoint in
+//!   that direction**, `jump` its profiles the same way (the open-by-default
+//!   fallback); then a terminal `drop` (Calico's per-endpoint default-deny). A
+//!   policy-selected endpoint ends at the end-of-policy drop and does NOT fall
+//!   through to its profiles — gated per-direction (ingress/egress independent).
 //! - **Base dispatch chain** `cali-forward` (filter/forward hook): for each
 //!   endpoint, `oifname <iface> jump cali-tw-<iface>` (traffic *to* the pod) and
-//!   `iifname <iface> jump cali-fw-<iface>` (traffic *from* the pod).
+//!   `iifname <iface> jump cali-fw-<iface>` (traffic *from* the pod). It jumps BOTH
+//!   directions for a forwarded packet and accepts only via its fall-through
+//!   `policy accept`, after both direction chains `return`ed — so an ALLOW in one
+//!   direction cannot short-circuit the other's enforcement.
 //!
 //! ### Multi-tier simplification (documented, per the US2 target)
 //!
@@ -68,11 +74,24 @@ pub(crate) enum Direction {
     Egress,
 }
 
-/// Map a proto [`RuleAction`] to an nft [`Verdict`]. `Log` has no terminal verdict
-/// in this subset, so it is skipped (`None`).
+/// Map a proto [`RuleAction`] to an nft [`Verdict`], reproducing Calico's
+/// accept-mark semantics so an ALLOW is NON-terminal.
+///
+/// A policy/profile chain is jumped from a per-endpoint direction chain, which is in
+/// turn jumped from `cali-forward` for BOTH directions of a forwarded packet. If an
+/// ALLOW rendered as a terminal `accept`, the first direction to match would end the
+/// whole `cali-forward` traversal and the other direction's policy would never run.
+/// So:
+/// - `Allow` → set the [`crate::nft::ACCEPT_MARK`] and `return`
+///   ([`Verdict::SetAcceptMarkReturn`], non-terminal): the calling dispatch chain
+///   sees the mark and returns, letting the other direction still be evaluated;
+///   acceptance is only `cali-forward`'s fall-through after both directions passed.
+/// - `Deny` → `drop` (the only terminal verdict).
+/// - `Pass` → `return` (no mark) — fall through to the next tier/profile handling.
+/// - `Log` → no terminal verdict in this subset (`None`, skipped).
 pub(crate) fn map_action(action: RuleAction) -> Option<Verdict> {
     match action {
-        RuleAction::Allow => Some(Verdict::Accept),
+        RuleAction::Allow => Some(Verdict::SetAcceptMarkReturn),
         RuleAction::Deny => Some(Verdict::Drop),
         RuleAction::Pass => Some(Verdict::Return),
         RuleAction::Log => None,
@@ -309,19 +328,40 @@ pub(crate) fn build_desired_chains(
     chains
 }
 
-/// The rules for one endpoint's dispatch chain: a `jump` to each tier policy in
-/// order (flattening tiers); then, only when NO policy selects the endpoint in this
-/// direction, a `jump` to each of its profiles (the open-by-default fallback); then
-/// the end-of-endpoint default-deny `drop`. A policy-selected endpoint skips the
-/// profile fallback and relies on the end-of-policy drop. Ensures a (possibly empty
-/// stub) chain exists for every referenced policy — and every jumped profile — so
-/// all jumps resolve.
+/// The rules for one endpoint's dispatch chain, implementing Calico's accept-mark
+/// semantics (see [`crate::nft::ACCEPT_MARK`] and [`map_action`]):
+///
+/// 1. **Clear the accept mark on entry.** `cali-forward` jumps BOTH this endpoint's
+///    direction chains for one forwarded packet, so a mark set while the packet
+///    traversed the *other* direction's chain would still be set here — clearing it
+///    makes this chain's verdict depend only on its own policies/profiles.
+/// 2. **Jump each tier policy in order** (flattening tiers); after each jump, a
+///    `return` guarded by "accept mark set" — as soon as one policy ALLOWs (sets the
+///    mark + returns to here), we return to `cali-forward` so the *other* direction
+///    is still evaluated. A DENY inside the policy chain `drop`s outright.
+/// 3. **Only when NO policy selects the endpoint in this direction**, fall back to
+///    the profile chains the same way (Calico's open-by-default `kns.<ns>` allow
+///    profile) — the GG rule, now expressed via the mark: a policy-selected endpoint
+///    reaches the default-deny below without consulting profiles.
+/// 4. **End-of-endpoint default-deny `drop`** — reached only when nothing set the
+///    accept mark (no ALLOW matched).
+///
+/// Ensures a (possibly empty stub) chain exists for every referenced policy — and
+/// every jumped profile — so all jumps resolve. The gating is per-direction: an
+/// endpoint may be policy-governed on ingress yet fall back to profiles on egress.
 fn dispatch_rules(
     ep: &WorkloadEndpoint,
     dir: Direction,
     chains: &mut BTreeMap<String, NftChain>,
 ) -> Vec<NftRule> {
+    // A `return` taken only when a jumped policy/profile chain set the accept mark
+    // (i.e. this direction ALLOWed) — non-terminal so the other direction still runs.
+    let return_if_accepted = || NftRule::new(Verdict::Return).with(NftMatch::AcceptMarkSet);
+
     let mut rules = Vec::new();
+    // 1. Clear any accept mark leaked from the other direction's chain.
+    rules.push(NftRule::new(Verdict::ClearAcceptMark));
+
     let mut policy_selected = false;
     for tier in &ep.tiers {
         let names = match dir {
@@ -335,20 +375,20 @@ fn dispatch_rules(
             };
             let cn = policy_chain_name(&id, dir);
             // Stub an empty chain for a referenced-but-unknown policy so the jump
-            // resolves; an empty chain falls through to the default-deny.
+            // resolves; an empty chain falls through (no mark) to the default-deny.
             chains
                 .entry(cn.clone())
                 .or_insert_with(|| NftChain::regular(cn.clone(), Vec::new()));
             rules.push(NftRule::new(Verdict::Jump(cn)));
+            // 2. Return as soon as a policy allowed (first-match-wins within the
+            //    direction; a later policy must not override an earlier ALLOW).
+            rules.push(return_if_accepted());
             policy_selected = true;
         }
     }
-    // Profiles are the fallback consulted ONLY when NO policy selects this endpoint
-    // in this direction (Calico's open-by-default per-namespace `kns.<ns>` allow
-    // profile). If ≥1 policy selected the endpoint, the policy chains govern and
-    // control falls through to the end-of-policy default-deny below — no profile
-    // fall-through. Per-direction: an endpoint may be policy-governed on ingress yet
-    // fall back to profiles on egress.
+    // 3. Profile fallback — ONLY when no policy selects this endpoint in this
+    //    direction (the GG rule). If ≥1 policy selected it, control falls through to
+    //    the end-of-policy default-deny below without consulting any profile.
     if !policy_selected {
         for prof in &ep.profile_ids {
             let cn = profile_chain_name(prof, dir);
@@ -356,8 +396,10 @@ fn dispatch_rules(
                 .entry(cn.clone())
                 .or_insert_with(|| NftChain::regular(cn.clone(), Vec::new()));
             rules.push(NftRule::new(Verdict::Jump(cn)));
+            rules.push(return_if_accepted());
         }
     }
+    // 4. End-of-endpoint default-deny (reached only if nothing set the accept mark).
     let dir_label = match dir {
         Direction::Ingress => "ingress",
         Direction::Egress => "egress",
@@ -369,6 +411,7 @@ fn dispatch_rules(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proto::TierInfo;
 
     // ---- pure render tests ------------------------------------------------
 
@@ -385,7 +428,8 @@ mod tests {
         let rendered = render_rule(&rule);
         assert_eq!(rendered.len(), 1);
         let line = rendered[0].clone();
-        assert_eq!(line.verdict, Verdict::Accept);
+        // ALLOW is non-terminal (set accept mark + return), NOT a terminal accept.
+        assert_eq!(line.verdict, Verdict::SetAcceptMarkReturn);
         let name = set_name_for("s:frontend");
         assert!(line.matches.contains(&NftMatch::SrcSet(name)));
         assert!(line.matches.contains(&NftMatch::L4Proto("tcp".into())));
@@ -413,11 +457,80 @@ mod tests {
 
     #[test]
     fn action_mapping_allow_deny_pass_log() {
-        assert_eq!(map_action(RuleAction::Allow), Some(Verdict::Accept));
+        // ALLOW must be NON-terminal (accept-mark + return) so a forwarded packet
+        // keeps traversing the other direction's chain; only DENY is terminal (drop).
+        assert_eq!(
+            map_action(RuleAction::Allow),
+            Some(Verdict::SetAcceptMarkReturn)
+        );
         assert_eq!(map_action(RuleAction::Deny), Some(Verdict::Drop));
         assert_eq!(map_action(RuleAction::Pass), Some(Verdict::Return));
         assert_eq!(map_action(RuleAction::Log), None);
         assert!(render_rule(&PolicyRule::action(RuleAction::Log)).is_empty());
+    }
+
+    // ---- dispatch chain accept-mark composition ---------------------------
+
+    /// A dispatch chain for a policy-selected endpoint: clear the accept mark on
+    /// entry, jump the policy, `return` if the policy set the accept mark, then the
+    /// end-of-policy default deny. No terminal `accept`; profiles NOT consulted.
+    #[test]
+    fn dispatch_chain_uses_accept_mark_not_terminal_accept() {
+        let mut chains: BTreeMap<String, NftChain> = BTreeMap::new();
+        let mut ep = WorkloadEndpoint {
+            name: "cali123".into(),
+            tiers: vec![TierInfo {
+                name: "default".into(),
+                ingress_policies: vec!["allow-web".into()],
+                egress_policies: vec![],
+            }],
+            ..Default::default()
+        };
+        ep.profile_ids = vec!["kns.nettest".into()];
+        let rules = dispatch_rules(&ep, Direction::Ingress, &mut chains);
+
+        // First rule clears the accept mark (independence from the other direction).
+        assert_eq!(rules[0].verdict, Verdict::ClearAcceptMark);
+        // The jump to the selecting policy, then a return-if-accepted.
+        let jump = NftRule::new(Verdict::Jump("cali-pi-default-allow-web".into()));
+        let ret = NftRule::new(Verdict::Return).with(NftMatch::AcceptMarkSet);
+        let jump_i = rules.iter().position(|r| *r == jump).expect("policy jump");
+        let ret_i = rules
+            .iter()
+            .position(|r| *r == ret)
+            .expect("return-if-accepted after the jump");
+        assert!(jump_i < ret_i, "return-if-accepted follows the policy jump");
+        // No terminal accept anywhere in the chain.
+        assert!(rules.iter().all(|r| r.verdict != Verdict::Accept));
+        // Ends with the default-deny drop; profile NOT jumped (policy selected).
+        assert_eq!(rules.last().unwrap().verdict, Verdict::Drop);
+        assert!(!rules
+            .iter()
+            .any(|r| r.verdict == Verdict::Jump("cali-pri-kns.nettest".into())));
+    }
+
+    /// No policy in this direction ⇒ fall back to the profile chain (open-by-default),
+    /// still via set-mark/return-if-accepted, then default deny.
+    #[test]
+    fn dispatch_chain_profile_fallback_uses_accept_mark() {
+        let mut chains: BTreeMap<String, NftChain> = BTreeMap::new();
+        let ep = WorkloadEndpoint {
+            name: "cali123".into(),
+            profile_ids: vec!["kns.nettest".into()],
+            ..Default::default()
+        };
+        let rules = dispatch_rules(&ep, Direction::Ingress, &mut chains);
+        assert_eq!(rules[0].verdict, Verdict::ClearAcceptMark);
+        let jump = NftRule::new(Verdict::Jump("cali-pri-kns.nettest".into()));
+        let ret = NftRule::new(Verdict::Return).with(NftMatch::AcceptMarkSet);
+        let jump_i = rules.iter().position(|r| *r == jump).expect("profile jump");
+        let ret_i = rules
+            .iter()
+            .position(|r| *r == ret)
+            .expect("return-if-accepted");
+        assert!(jump_i < ret_i);
+        assert_eq!(rules.last().unwrap().verdict, Verdict::Drop);
+        assert!(rules.iter().all(|r| r.verdict != Verdict::Accept));
     }
 
     #[test]
