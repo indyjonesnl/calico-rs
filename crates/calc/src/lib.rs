@@ -11,12 +11,14 @@
 
 mod from_resources;
 mod k8s_policy;
+mod labelindex;
 mod policy_eval;
 mod routes;
 mod selector;
 
 pub use from_resources::{evaluator_from, network_policy_to_eval, profile_to_eval};
 pub use k8s_policy::{k8s_network_policy_to_eval, K8sNetworkPolicySpec};
+pub use labelindex::{Delta, IpSetId, ItemId, Member, MemberChange, MembershipIndex, ParentId};
 pub use policy_eval::{
     Decision, Direction, EvalPolicy, EvalRule, Packet, PolicyEvaluator, RuleAction, Tier,
     TierDefault,
