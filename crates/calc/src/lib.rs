@@ -14,6 +14,7 @@ mod from_resources;
 mod k8s_policy;
 mod labelindex;
 mod policy_eval;
+mod policy_resolver;
 mod routes;
 mod selector;
 
@@ -27,6 +28,9 @@ pub use labelindex::{Delta, IpSetId, ItemId, Member, MemberChange, MembershipInd
 pub use policy_eval::{
     Decision, Direction, EvalPolicy, EvalRule, Packet, PolicyEvaluator, RuleAction, Tier,
     TierDefault,
+};
+pub use policy_resolver::{
+    sort_policies, sort_tiers, EndpointPolicyOrder, PolicyResolver, TierPolicies,
 };
 pub use routes::{BlockInfo, Route, RouteResolver, RouteType, WorkloadInfo};
 pub use selector::{Selector, SelectorError};
