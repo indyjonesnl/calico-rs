@@ -9,6 +9,7 @@ workspace = true
 
 [dependencies]
 apis = { version = "0.1.0", path = "../apis" }
+proto = { path = "../proto" }
 serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]

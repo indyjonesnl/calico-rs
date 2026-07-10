@@ -155,6 +155,9 @@ impl GraphDeltas {
 struct LocalEndpoint {
     own_labels: BTreeMap<String, String>,
     profiles: Vec<ProfileId>,
+    /// The endpoint's member IPs/CIDRs, kept so callbacks (the event sequencer)
+    /// can populate a `proto::WorkloadEndpoint`'s `ipv4_nets`/`ipv6_nets`.
+    ipnets: Vec<String>,
 }
 
 /// The calc-graph root: owns the calculation components and routes
@@ -176,6 +179,10 @@ pub struct CalcGraph {
     resolved_policies: BTreeMap<PolicyId, ResolvedPolicy>,
     /// Latest resolved rules per active profile.
     resolved_profiles: BTreeMap<ProfileId, ResolvedPolicy>,
+    /// Tier each known policy belongs to (its spec `tier`, defaulting to
+    /// [`DEFAULT_TIER`]). A getter surface so callbacks can build a
+    /// `proto::PolicyId { tier, name }` for an active-policy transition.
+    policy_tiers: BTreeMap<PolicyId, String>,
 }
 
 impl CalcGraph {
@@ -190,6 +197,7 @@ impl CalcGraph {
             profile_labels: BTreeMap::new(),
             resolved_policies: BTreeMap::new(),
             resolved_profiles: BTreeMap::new(),
+            policy_tiers: BTreeMap::new(),
         }
     }
 
@@ -280,6 +288,28 @@ impl CalcGraph {
         self.resolved_profiles.get(id)
     }
 
+    /// Whether an endpoint is currently tracked as **local** (enforced here).
+    /// Distinguishes an endpoint update from a removal when a caller only has an
+    /// [`EndpointPolicyOrder`] (a removed endpoint's order is empty, but so is a
+    /// present-but-unpoliced endpoint's).
+    pub fn is_local_endpoint(&self, id: &str) -> bool {
+        self.local_endpoints.contains_key(id)
+    }
+
+    /// A local endpoint's `(profile_ids, ipnets)`, for populating a
+    /// `proto::WorkloadEndpoint`. `None` if not a local endpoint.
+    pub fn local_endpoint_detail(&self, id: &str) -> Option<(Vec<String>, Vec<String>)> {
+        self.local_endpoints
+            .get(id)
+            .map(|ep| (ep.profiles.clone(), ep.ipnets.clone()))
+    }
+
+    /// The tier a known policy belongs to (its spec `tier`, defaulting to
+    /// `"default"`), for building a `proto::PolicyId`.
+    pub fn policy_tier(&self, id: &str) -> Option<&str> {
+        self.policy_tiers.get(id).map(String::as_str)
+    }
+
     // ---- fan-out routing -------------------------------------------------
 
     fn on_policy(
@@ -295,6 +325,7 @@ impl CalcGraph {
             deltas
                 .endpoint_orders
                 .extend(self.resolver.on_policy_remove(&id));
+            self.policy_tiers.remove(&id);
             return Ok(());
         }
         // Active-rules side: drives which policies are active + their IP sets.
@@ -304,6 +335,7 @@ impl CalcGraph {
         // to parse the applies-to selector + direction rather than duplicating.
         let eval = network_policy_to_eval(&spec)?;
         let tier = spec.tier.as_deref().unwrap_or(DEFAULT_TIER);
+        self.policy_tiers.insert(id.clone(), tier.to_string());
         deltas
             .endpoint_orders
             .extend(self.resolver.on_policy_update(
@@ -369,7 +401,7 @@ impl CalcGraph {
         }
         // Every endpoint — local or remote — is an item in the shared index:
         // IP sets can include pods on other nodes.
-        let members: BTreeSet<Member> = ipnets.into_iter().collect();
+        let members: BTreeSet<Member> = ipnets.iter().cloned().collect();
         deltas
             .ip_set_member_deltas
             .extend(
@@ -391,6 +423,7 @@ impl CalcGraph {
                 LocalEndpoint {
                     own_labels: labels,
                     profiles,
+                    ipnets,
                 },
             );
         } else {

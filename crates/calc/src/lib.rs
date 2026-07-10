@@ -10,6 +10,7 @@
 //! core of label-based policy matching (spec FR-007, FR-010).
 
 mod active_rules;
+mod event_sequencer;
 mod from_resources;
 mod graph;
 mod k8s_policy;
@@ -23,6 +24,7 @@ pub use active_rules::{
     ip_set_id, ActiveRulesCalculator, PolicyRules, ResolvedPolicy, ResolvedRule, RuleScanner,
     ScanResult, ScanRule, Transition,
 };
+pub use event_sequencer::EventSequencer;
 pub use from_resources::{evaluator_from, network_policy_to_eval, profile_to_eval};
 pub use graph::{CalcGraph, GraphDeltas, ResourceUpdate};
 pub use k8s_policy::{k8s_network_policy_to_eval, K8sNetworkPolicySpec};
