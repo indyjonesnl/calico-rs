@@ -12,6 +12,7 @@ pub mod ipset_manager;
 pub mod nat;
 pub mod nft;
 pub mod nftables;
+pub mod policy_agent;
 pub mod policy_render;
 pub mod reconcile;
 pub mod route_manager;
