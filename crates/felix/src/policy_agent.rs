@@ -20,9 +20,13 @@
 //! Pure, datastore-free translation of one [`datastore::SyncerEvent::Update`]
 //! into the calc graph's typed [`calc::ResourceUpdate`]. Per kind:
 //!
-//! - `NetworkPolicy` / `GlobalNetworkPolicy` → `Policy` (GNP fields are mapped
-//!   onto a [`apis::NetworkPolicySpec`]; the GNP-only `namespaceSelector`,
-//!   `applyOnForward`, `doNotTrack`, `preDNAT` are dropped — see gaps).
+//! - `NetworkPolicy` / `GlobalNetworkPolicy` → `Policy`. Both are
+//!   **namespace-scoped** here (via `calc::scope_network_policy` /
+//!   `calc::scope_global_network_policy`): a namespaced `NetworkPolicy` is
+//!   confined to its namespace and its rule peers scoped, and a GNP's
+//!   `namespaceSelector` (spec-level and per-rule) is `pcns.`-prefixed. GNP
+//!   fields are mapped onto a [`apis::NetworkPolicySpec`]; the GNP-only
+//!   `applyOnForward`, `doNotTrack`, `preDNAT` are dropped — see gaps.
 //! - `Profile` → `Profile`.
 //! - `WorkloadEndpoint` → `WorkloadEndpoint`, with the calc **endpoint id set to
 //!   `spec.interfaceName`** (see the id==iface note below) and `ipnetworks`
@@ -43,12 +47,16 @@
 //!
 //! # Known gaps (surfaced, not silently ignored)
 //!
-//! - **Namespace scoping**: policy/endpoint ids are the bare resource `name`
-//!   (namespace dropped). A `NetworkPolicy` is not yet `pcns.`-selector-scoped to
-//!   its namespace, so a policy in namespace A can match an identically-labelled
-//!   WEP in namespace B (tracker T059). The agent watches *all* namespaces
-//!   (namespace = `None`), which is what makes this observable.
-//! - **GNP lossiness**: the GNP-only fields above are dropped in the mapping.
+//! - **Endpoint identity**: policy/endpoint ids are the bare resource `name`
+//!   (the namespace is used for policy selector scoping but is not part of the
+//!   calc id). Cross-namespace policy over-application is nonetheless prevented
+//!   by the selector scoping above (tracker T059, closed): a namespaced
+//!   `NetworkPolicy`'s selector carries `projectcalico.org/namespace == '<ns>'`,
+//!   so it cannot match a WEP in another namespace even though the agent watches
+//!   *all* namespaces (namespace = `None`).
+//! - **GNP lossiness**: the GNP-only `applyOnForward`/`doNotTrack`/`preDNAT`
+//!   fields are dropped in the mapping (the `namespaceSelector` is now folded,
+//!   not dropped).
 //! - **Privilege**: [`run_policy_dataplane`] programs real nftables via
 //!   `IpSetManager::with_nft` / `EndpointManager::with_nft`; those only succeed in
 //!   the privileged node DaemonSet (or a netns with `nft`). Off-node the loop runs
@@ -74,11 +82,18 @@ const CHANNEL_CAPACITY: usize = 1024;
 /// Translate one datastore `Update` into a calc [`ResourceUpdate`], or `None` if
 /// the kind is not policy-relevant or the spec does not deserialize.
 ///
-/// `labels` are the resource's own `metadata.labels` (what selectors match).
-/// `is_delete` maps to the update's `remove` flag.
+/// `namespace` is the resource's namespace (`Some` for a namespaced
+/// `NetworkPolicy`, `None` for cluster-scoped kinds). `labels` are the
+/// resource's own `metadata.labels` (what selectors match). `is_delete` maps to
+/// the update's `remove` flag.
+///
+/// Namespaced `NetworkPolicy`s and `GlobalNetworkPolicy`s are namespace-scoped
+/// here (via [`calc::scope_network_policy`] / [`calc::scope_global_network_policy`])
+/// before the calc graph sees them — see the module-level scoping note.
 pub fn syncer_update_to_resource(
     kind: ResourceKind,
     name: &str,
+    namespace: Option<&str>,
     spec: serde_json::Value,
     labels: BTreeMap<String, String>,
     is_delete: bool,
@@ -86,6 +101,12 @@ pub fn syncer_update_to_resource(
     match kind {
         ResourceKind::NetworkPolicy => {
             let spec: NetworkPolicySpec = deserialize(name, spec)?;
+            // Confine a namespaced NetworkPolicy to its namespace so it cannot
+            // match identically-labelled endpoints elsewhere (tracker T059).
+            let spec = match namespace.filter(|ns| !ns.is_empty()) {
+                Some(ns) => calc::scope_network_policy(&spec, ns),
+                None => spec,
+            };
             Some(ResourceUpdate::Policy {
                 id: name.to_string(),
                 spec,
@@ -94,9 +115,14 @@ pub fn syncer_update_to_resource(
         }
         ResourceKind::GlobalNetworkPolicy => {
             let gnp: GlobalNetworkPolicySpec = deserialize(name, spec)?;
+            // A GNP is cluster-scoped (no own-namespace confinement), but its
+            // namespaceSelector (spec-level and per-rule) is pcns.-prefixed.
+            let namespace_selector = gnp.namespace_selector.clone();
+            let spec =
+                calc::scope_global_network_policy(&gnp_to_network_policy(gnp), &namespace_selector);
             Some(ResourceUpdate::Policy {
                 id: name.to_string(),
-                spec: gnp_to_network_policy(gnp),
+                spec,
                 remove: is_delete,
             })
         }
@@ -170,8 +196,9 @@ fn normalize_cidr(addr: &str) -> String {
 
 /// Map the overlapping fields of a [`GlobalNetworkPolicySpec`] onto a
 /// [`NetworkPolicySpec`] (the only spec the calc graph consumes). The GNP-only
-/// `namespaceSelector`, `applyOnForward`, `doNotTrack`, `preDNAT` are dropped —
-/// see the module's known-gaps note.
+/// `applyOnForward`, `doNotTrack`, `preDNAT` are dropped — see the module's
+/// known-gaps note. The `namespaceSelector` is folded separately by the caller
+/// via [`calc::scope_global_network_policy`], not here.
 fn gnp_to_network_policy(gnp: GlobalNetworkPolicySpec) -> NetworkPolicySpec {
     NetworkPolicySpec {
         tier: gnp.tier,
@@ -261,12 +288,23 @@ pub async fn run_policy_dataplane(backend: KddBackend, local_node: String) -> Re
                     update_type,
                     ..
                 }) => {
-                    let Key::Resource { kind, name, .. } = key else {
+                    let Key::Resource {
+                        kind,
+                        name,
+                        namespace,
+                    } = key
+                    else {
                         continue;
                     };
                     let is_delete = matches!(update_type, UpdateType::Deleted);
-                    let Some(ru) = syncer_update_to_resource(kind, &name, spec, labels, is_delete)
-                    else {
+                    let Some(ru) = syncer_update_to_resource(
+                        kind,
+                        &name,
+                        namespace.as_deref(),
+                        spec,
+                        labels,
+                        is_delete,
+                    ) else {
                         continue;
                     };
                     match graph.on_update(ru) {
@@ -330,9 +368,15 @@ mod tests {
             "types": ["Ingress"],
             "ingress": [{"action":"Allow","source":{"selector":"role == 'web'"}}]
         });
-        let ru =
-            syncer_update_to_resource(ResourceKind::NetworkPolicy, "np1", spec, labels(&[]), false)
-                .expect("policy");
+        let ru = syncer_update_to_resource(
+            ResourceKind::NetworkPolicy,
+            "np1",
+            None,
+            spec,
+            labels(&[]),
+            false,
+        )
+        .expect("policy");
         match ru {
             ResourceUpdate::Policy { id, spec, remove } => {
                 assert_eq!(id, "np1");
@@ -347,9 +391,15 @@ mod tests {
     #[test]
     fn delete_event_sets_remove_true() {
         let spec = json!({"selector":"all()"});
-        let ru =
-            syncer_update_to_resource(ResourceKind::NetworkPolicy, "np1", spec, labels(&[]), true)
-                .expect("policy");
+        let ru = syncer_update_to_resource(
+            ResourceKind::NetworkPolicy,
+            "np1",
+            None,
+            spec,
+            labels(&[]),
+            true,
+        )
+        .expect("policy");
         assert!(matches!(ru, ResourceUpdate::Policy { remove: true, .. }));
     }
 
@@ -359,6 +409,7 @@ mod tests {
         let ru = syncer_update_to_resource(
             ResourceKind::Profile,
             "kns.default",
+            None,
             spec,
             labels(&[]),
             false,
@@ -390,6 +441,7 @@ mod tests {
         let ru = syncer_update_to_resource(
             ResourceKind::WorkloadEndpoint,
             "node-a-k8s-pod-eth0",
+            None,
             spec,
             labels(&[("role", "db")]),
             false,
@@ -428,6 +480,7 @@ mod tests {
         let ru = syncer_update_to_resource(
             ResourceKind::NetworkSet,
             "corpnet",
+            None,
             spec,
             labels(&[("env", "corp")]),
             false,
@@ -452,8 +505,15 @@ mod tests {
     #[test]
     fn tier_maps_order() {
         let spec = json!({"order": 100.0});
-        let ru = syncer_update_to_resource(ResourceKind::Tier, "default", spec, labels(&[]), false)
-            .expect("tier");
+        let ru = syncer_update_to_resource(
+            ResourceKind::Tier,
+            "default",
+            None,
+            spec,
+            labels(&[]),
+            false,
+        )
+        .expect("tier");
         match ru {
             ResourceUpdate::Tier {
                 name,
@@ -465,6 +525,82 @@ mod tests {
                 assert!(!remove);
             }
             other => panic!("expected Tier, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn namespaced_network_policy_is_scoped_to_its_namespace() {
+        // A namespaced NetworkPolicy must be confined to its namespace and its
+        // rule peers scoped (tracker T059), so it cannot over-apply to an
+        // identically-labelled endpoint in another namespace.
+        let spec = json!({
+            "selector": "role == 'db'",
+            "types": ["Ingress"],
+            "ingress": [{"action":"Allow","source":{"selector":"role == 'web'"}}]
+        });
+        let ru = syncer_update_to_resource(
+            ResourceKind::NetworkPolicy,
+            "np1",
+            Some("prod"),
+            spec,
+            labels(&[]),
+            false,
+        )
+        .expect("policy");
+        match ru {
+            ResourceUpdate::Policy { id, spec, .. } => {
+                assert_eq!(id, "np1");
+                // Applies-to selector confined to the namespace.
+                assert_eq!(
+                    spec.selector,
+                    "(role == 'db') && projectcalico.org/namespace == 'prod'"
+                );
+                // Rule peer selector confined to the namespace (ns-first).
+                assert_eq!(
+                    spec.ingress[0].source.selector.as_deref(),
+                    Some("(projectcalico.org/namespace == 'prod') && (role == 'web')")
+                );
+            }
+            other => panic!("expected Policy, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn global_network_policy_namespace_selector_is_pcns_prefixed_not_own_ns_confined() {
+        // A GNP is cluster-scoped: NOT own-namespace-confined, but its
+        // spec-level namespaceSelector is pcns.-prefixed into the applies-to
+        // selector, and rule namespaceSelectors are pcns.-prefixed.
+        let spec = json!({
+            "selector": "all()",
+            "namespaceSelector": "team == 'x'",
+            "types": ["Ingress"],
+            "ingress": [{"action":"Allow","source":{"namespaceSelector":"env == 'prod'"}}]
+        });
+        let ru = syncer_update_to_resource(
+            ResourceKind::GlobalNetworkPolicy,
+            "gnp1",
+            None,
+            spec,
+            labels(&[]),
+            false,
+        )
+        .expect("gnp");
+        match ru {
+            ResourceUpdate::Policy { spec, .. } => {
+                // No own-namespace confinement; namespaceSelector pcns.-prefixed
+                // and appended. Upstream translates the resulting `all()` (the
+                // GNP's own selector) to `has(projectcalico.org/namespace)` when
+                // a namespaceSelector is present (globalnetworkpolicyprocessor).
+                assert_eq!(
+                    spec.selector,
+                    "(has(projectcalico.org/namespace)) && pcns.team == \"x\""
+                );
+                assert_eq!(
+                    spec.ingress[0].source.selector.as_deref(),
+                    Some("pcns.env == \"prod\"")
+                );
+            }
+            other => panic!("expected Policy from GNP, got {other:?}"),
         }
     }
 
@@ -482,6 +618,7 @@ mod tests {
         let ru = syncer_update_to_resource(
             ResourceKind::GlobalNetworkPolicy,
             "gnp1",
+            None,
             spec,
             labels(&[]),
             false,
@@ -490,7 +627,13 @@ mod tests {
         match ru {
             ResourceUpdate::Policy { id, spec, remove } => {
                 assert_eq!(id, "gnp1");
-                assert_eq!(spec.selector, "all()");
+                // GNP with a spec-level namespaceSelector: selector is
+                // pcns.-prefixed and appended (not own-namespace-confined); the
+                // GNP's own `all()` is translated to has(namespace) upstream.
+                assert_eq!(
+                    spec.selector,
+                    "(has(projectcalico.org/namespace)) && pcns.team == \"x\""
+                );
                 assert_eq!(spec.tier.as_deref(), Some("default"));
                 assert_eq!(spec.egress.len(), 1);
                 assert!(!remove);
@@ -506,6 +649,7 @@ mod tests {
         assert!(syncer_update_to_resource(
             ResourceKind::NetworkPolicy,
             "np1",
+            None,
             spec,
             labels(&[]),
             false
@@ -516,10 +660,15 @@ mod tests {
     #[test]
     fn unknown_kind_returns_none() {
         let spec = json!({"cidr":"10.0.0.0/16"});
-        assert!(
-            syncer_update_to_resource(ResourceKind::IpPool, "p", spec, labels(&[]), false)
-                .is_none()
-        );
+        assert!(syncer_update_to_resource(
+            ResourceKind::IpPool,
+            "p",
+            None,
+            spec,
+            labels(&[]),
+            false
+        )
+        .is_none());
     }
 
     // ---- end-to-end: adapter → graph → sequencer → collecting flush ------
@@ -532,7 +681,7 @@ mod tests {
         spec: serde_json::Value,
         lbls: &[(&str, &str)],
     ) {
-        let ru = syncer_update_to_resource(kind, name, spec, labels(lbls), false)
+        let ru = syncer_update_to_resource(kind, name, None, spec, labels(lbls), false)
             .expect("adapter produced a ResourceUpdate");
         let deltas = graph.on_update(ru).expect("graph update");
         seq.ingest(&deltas, graph);

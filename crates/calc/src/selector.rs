@@ -69,6 +69,35 @@ impl Selector {
         Ok(sel)
     }
 
+    /// Return a copy of this selector with every label **key** prefixed by
+    /// `prefix`; values and structure are unchanged, and `all()` (which
+    /// references no key) is returned as-is.
+    ///
+    /// This reproduces upstream `parser.PrefixVisitor`
+    /// (`libcalico-go/lib/selector/parser/ast.go`), used to project a rule's
+    /// `namespaceSelector` into the `pcns.` label namespace (namespace labels
+    /// are surfaced onto endpoints under that prefix) — e.g. `k == 'v'` becomes
+    /// `pcns.k == 'v'`.
+    pub fn prefix_keys(&self, prefix: &str) -> Selector {
+        match self {
+            Selector::All => Selector::All,
+            Selector::Has(k) => Selector::Has(format!("{prefix}{k}")),
+            Selector::Equal(k, v) => Selector::Equal(format!("{prefix}{k}"), v.clone()),
+            Selector::NotEqual(k, v) => Selector::NotEqual(format!("{prefix}{k}"), v.clone()),
+            Selector::In(k, set) => Selector::In(format!("{prefix}{k}"), set.clone()),
+            Selector::NotIn(k, set) => Selector::NotIn(format!("{prefix}{k}"), set.clone()),
+            Selector::Not(e) => Selector::Not(Box::new(e.prefix_keys(prefix))),
+            Selector::And(a, b) => Selector::And(
+                Box::new(a.prefix_keys(prefix)),
+                Box::new(b.prefix_keys(prefix)),
+            ),
+            Selector::Or(a, b) => Selector::Or(
+                Box::new(a.prefix_keys(prefix)),
+                Box::new(b.prefix_keys(prefix)),
+            ),
+        }
+    }
+
     /// Evaluate the selector against a set of labels.
     pub fn matches(&self, labels: &BTreeMap<String, String>) -> bool {
         match self {
@@ -479,6 +508,34 @@ mod tests {
         let s = Selector::parse("!(a == '1') && b != '2'").unwrap();
         let reparsed = Selector::parse(&s.to_string()).unwrap();
         assert_eq!(s.to_string(), reparsed.to_string());
+    }
+
+    #[test]
+    fn prefix_keys_prefixes_every_label_key() {
+        // Brief vector: `a == 'x' && has(b)` prefixed with `pcns.` matches
+        // `pcns.a == 'x' && has(pcns.b)`.
+        let s = Selector::parse("a == 'x' && has(b)").unwrap();
+        let p = s.prefix_keys("pcns.");
+        assert_eq!(p, Selector::parse("pcns.a == 'x' && has(pcns.b)").unwrap());
+        // Display round-trips: parse(display(p)) == p.
+        assert_eq!(Selector::parse(&p.to_string()).unwrap(), p);
+        // Evaluation follows the prefixed keys, not the originals.
+        assert!(p.matches(&labels(&[("pcns.a", "x"), ("pcns.b", "1")])));
+        assert!(!p.matches(&labels(&[("a", "x"), ("b", "1")])));
+    }
+
+    #[test]
+    fn prefix_keys_covers_all_node_kinds_and_preserves_all_and_values() {
+        // Every label-bearing node kind (In/NotEqual/NotIn/Has/Equal) gets its
+        // key prefixed; `all()` (no key) and all values are unchanged. Mirrors
+        // upstream `parser.PrefixVisitor`.
+        let s = Selector::parse("!(k in {'v1','v2'}) || m != 'n' || has(h) || all()").unwrap();
+        let p = s.prefix_keys("pcns.");
+        let expected =
+            Selector::parse("!(pcns.k in {'v1','v2'}) || pcns.m != 'n' || has(pcns.h) || all()")
+                .unwrap();
+        assert_eq!(p, expected);
+        assert_eq!(p.to_string(), expected.to_string());
     }
 
     #[test]

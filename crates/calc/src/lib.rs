@@ -19,6 +19,7 @@ mod labelindex;
 mod policy_eval;
 mod policy_resolver;
 mod routes;
+mod scope;
 mod selector;
 
 pub use active_rules::{
@@ -39,4 +40,5 @@ pub use policy_resolver::{
     sort_policies, sort_tiers, EndpointPolicyOrder, PolicyResolver, TierPolicies,
 };
 pub use routes::{BlockInfo, Route, RouteResolver, RouteType, WorkloadInfo};
+pub use scope::{scope_global_network_policy, scope_network_policy};
 pub use selector::{Selector, SelectorError};
