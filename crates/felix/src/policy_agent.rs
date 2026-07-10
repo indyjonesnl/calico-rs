@@ -63,7 +63,7 @@
 //!   DaemonSet (or a netns with `nft`). Off-node the loop runs but the apply rounds
 //!   fail and retry.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use apis::{GlobalNetworkPolicySpec, NetworkPolicySpec, NetworkSetSpec, ProfileSpec, TierSpec};
 use calc::{CalcGraph, EventSequencer, ResourceUpdate};
@@ -236,6 +236,10 @@ async fn flush_to_channel(
     let mut sink = CollectingSink::default();
     // Infallible sink: flush cannot fail.
     let Ok(()) = seq.flush_into(&mut sink);
+    tracing::debug!(
+        count = sink.msgs.len(),
+        "policy agent: flushing sequencer output to dataplane channel"
+    );
     for msg in sink.msgs {
         tx.send(msg)
             .await
@@ -269,20 +273,38 @@ pub async fn run_policy_dataplane(backend: KddBackend, local_node: String) -> Re
         let mut graph = CalcGraph::new(&local_node);
         let mut seq = EventSequencer::new();
 
+        // Running counts of the state the graph has ingested so far, tracked from
+        // the adapter side (deduped by id, decremented on remove) purely for the
+        // InSync observability line below — does not feed the watch/dataplane
+        // logic itself.
+        let mut local_endpoint_ids: BTreeSet<String> = BTreeSet::new();
+        let mut policy_ids: BTreeSet<String> = BTreeSet::new();
+
         let kinds = policy_kinds();
+        tracing::info!(
+            kinds = ?kinds.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+            "policy agent: starting watch"
+        );
         let stream = watch_many(&backend, &kinds);
         futures::pin_mut!(stream);
 
         while let Some(item) = stream.next().await {
             match item {
-                Ok(SyncerEvent::Status(SyncStatus::InSync)) => {
-                    seq.mark_in_sync();
-                    if let Err(e) = flush_to_channel(&mut seq, &tx).await {
-                        tracing::warn!(error = %e, "policy agent: flush after InSync failed");
-                        break;
+                Ok(SyncerEvent::Status(status)) => {
+                    tracing::debug!(status = ?status, "policy agent: sync status event");
+                    if status == SyncStatus::InSync {
+                        seq.mark_in_sync();
+                        if let Err(e) = flush_to_channel(&mut seq, &tx).await {
+                            tracing::warn!(error = %e, "policy agent: flush after InSync failed");
+                            break;
+                        }
+                        tracing::info!(
+                            endpoints = local_endpoint_ids.len(),
+                            policies = policy_ids.len(),
+                            "policy agent: datastore in-sync"
+                        );
                     }
                 }
-                Ok(SyncerEvent::Status(_)) => {}
                 Ok(SyncerEvent::Update {
                     key,
                     spec,
@@ -298,6 +320,7 @@ pub async fn run_policy_dataplane(backend: KddBackend, local_node: String) -> Re
                     else {
                         continue;
                     };
+                    tracing::debug!(kind = ?kind, name = %name, update_type = ?update_type, "policy agent: syncer update received");
                     let is_delete = matches!(update_type, UpdateType::Deleted);
                     let Some(ru) = syncer_update_to_resource(
                         kind,
@@ -307,8 +330,28 @@ pub async fn run_policy_dataplane(backend: KddBackend, local_node: String) -> Re
                         labels,
                         is_delete,
                     ) else {
+                        tracing::debug!(kind = ?kind, name = %name, "policy agent: adapter skipped resource (not policy-relevant, or spec failed to deserialize)");
                         continue;
                     };
+                    match &ru {
+                        ResourceUpdate::WorkloadEndpoint {
+                            id, node, remove, ..
+                        } if *node == local_node => {
+                            if *remove {
+                                local_endpoint_ids.remove(id);
+                            } else {
+                                local_endpoint_ids.insert(id.clone());
+                            }
+                        }
+                        ResourceUpdate::Policy { id, remove, .. } => {
+                            if *remove {
+                                policy_ids.remove(id);
+                            } else {
+                                policy_ids.insert(id.clone());
+                            }
+                        }
+                        _ => {}
+                    }
                     match graph.on_update(ru) {
                         Ok(deltas) => {
                             seq.ingest(&deltas, &graph);
@@ -327,6 +370,7 @@ pub async fn run_policy_dataplane(backend: KddBackend, local_node: String) -> Re
                 }
             }
         }
+        tracing::warn!("policy agent: watch stream ended; dataplane will go idle");
         // Dropping `tx` here signals the dataplane loop to exit.
     };
 

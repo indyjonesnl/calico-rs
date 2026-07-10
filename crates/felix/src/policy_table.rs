@@ -99,6 +99,10 @@ pub struct PolicyTableManager<A: TableApplier> {
     endpoints: BTreeMap<WorkloadEndpointId, WorkloadEndpoint>,
     /// The last document successfully applied — the skip-if-unchanged guard.
     last_doc: Option<String>,
+    /// Whether the last `complete_deferred_work` already logged the
+    /// empty-desired-state info line — reset once desired state becomes
+    /// non-empty, so the transition logs exactly once each way.
+    logged_empty_desired_state: bool,
     applier: A,
 }
 
@@ -111,6 +115,7 @@ impl<A: TableApplier> PolicyTableManager<A> {
             profiles: BTreeMap::new(),
             endpoints: BTreeMap::new(),
             last_doc: None,
+            logged_empty_desired_state: false,
             applier,
         }
     }
@@ -251,22 +256,89 @@ impl<A: TableApplier> Manager for PolicyTableManager<A> {
     async fn complete_deferred_work(&mut self) -> Result<(), DataplaneError> {
         let doc = self.render();
 
+        // Distinguish "the watch delivered nothing" from "apply failed": log once
+        // on the transition INTO an empty desired state (and reset the guard once
+        // state arrives), so an empty `inet calico` table is immediately
+        // explainable from the logs.
+        let desired_is_empty = self.sets.is_empty()
+            && self.policies.is_empty()
+            && self.profiles.is_empty()
+            && self.endpoints.is_empty();
+        if desired_is_empty {
+            if !self.logged_empty_desired_state {
+                tracing::info!("policy table: desired state is empty (no local endpoints)");
+                self.logged_empty_desired_state = true;
+            }
+        } else {
+            self.logged_empty_desired_state = false;
+        }
+
+        // Recompute the same pure chain set `render()` derived internally, purely
+        // to summarize what is about to be applied (or was skipped) at debug —
+        // does not affect the rendered document or the apply outcome.
+        let chains = build_desired_chains(&self.policies, &self.profiles, &self.endpoints);
+        let (policy_chains, profile_chains, dispatch_chains) = count_chain_kinds(chains.keys());
+
         // Skip-if-unchanged: a byte-identical render means the kernel already
         // matches desired — do NOT re-flush the table every tick.
         if self.last_doc.as_deref() == Some(doc.as_str()) {
+            tracing::debug!(
+                sets = self.sets.len(),
+                policy_chains,
+                profile_chains,
+                dispatch_chains,
+                "policy table: desired state unchanged since last apply; skipping"
+            );
             return Ok(());
         }
 
+        tracing::debug!(
+            sets = self.sets.len(),
+            policy_chains,
+            profile_chains,
+            dispatch_chains,
+            "policy table: applying rendered document"
+        );
+
         // Single atomic apply. On failure, return Err *without* caching the
         // document so the framework retries the same render with state intact.
-        self.applier
-            .apply_document(&doc)
-            .await
-            .map_err(DataplaneError::new)?;
+        if let Err(e) = self.applier.apply_document(&doc).await {
+            // The felix::dataplane apply loop already WARNs the manager index +
+            // error; additionally surface the exact failing nft input at debug so
+            // it can be inspected without reproducing the render by hand.
+            let preview: String = doc.lines().take(40).collect::<Vec<_>>().join("\n");
+            tracing::debug!(
+                nft_document = %preview,
+                "policy table: apply failed; rendered nft document (first 40 lines)"
+            );
+            return Err(DataplaneError::new(e));
+        }
 
         self.last_doc = Some(doc);
         Ok(())
     }
+}
+
+/// Bucket rendered chain names into (policy, profile, dispatch) counts for the
+/// debug apply summary. Pure string-prefix classification derived from the
+/// deterministic names [`crate::endpoint_manager::build_desired_chains`] assigns;
+/// purely for observability, no effect on what is rendered or applied. Chains
+/// that match neither prefix (currently only the `cali-forward` base chain) are
+/// not tallied.
+fn count_chain_kinds<'a>(names: impl Iterator<Item = &'a String>) -> (usize, usize, usize) {
+    let mut policy = 0;
+    let mut profile = 0;
+    let mut dispatch = 0;
+    for name in names {
+        if name.starts_with("cali-pi-") || name.starts_with("cali-po-") {
+            policy += 1;
+        } else if name.starts_with("cali-pri-") || name.starts_with("cali-pro-") {
+            profile += 1;
+        } else if name.starts_with("cali-tw-") || name.starts_with("cali-fw-") {
+            dispatch += 1;
+        }
+    }
+    (policy, profile, dispatch)
 }
 
 /// `nft`-backed [`TableApplier`] that feeds the full-table document to `nft -f -`
