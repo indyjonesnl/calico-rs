@@ -85,6 +85,48 @@ impl Selector {
     }
 }
 
+impl std::fmt::Display for Selector {
+    /// Render a **canonical** string form of the selector.
+    ///
+    /// This is deterministic for a given parsed AST and is the basis for the
+    /// stable IP-set id a rule selector hashes to (see
+    /// [`crate::active_rules::ip_set_id`]). Set literals are sorted and
+    /// de-duplicated so that `k in {"b","a"}` and `k in {"a","b"}` canonicalise
+    /// identically; binary/negation operands are always parenthesised so the
+    /// form is unambiguous. It is NOT guaranteed byte-identical to the input.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Selector::All => write!(f, "all()"),
+            Selector::Has(k) => write!(f, "has({k})"),
+            Selector::Equal(k, v) => write!(f, "{k} == {}", quote(v)),
+            Selector::NotEqual(k, v) => write!(f, "{k} != {}", quote(v)),
+            Selector::In(k, set) => write!(f, "{k} in {}", set_literal(set)),
+            Selector::NotIn(k, set) => write!(f, "{k} not in {}", set_literal(set)),
+            Selector::Not(e) => write!(f, "!({e})"),
+            Selector::And(a, b) => write!(f, "({a}) && ({b})"),
+            Selector::Or(a, b) => write!(f, "({a}) || ({b})"),
+        }
+    }
+}
+
+/// Quote a label value for the canonical form, escaping `\` and `"`.
+fn quote(v: &str) -> String {
+    format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// Canonical set literal: sorted, de-duplicated, quoted values.
+fn set_literal(set: &[String]) -> String {
+    let mut items: Vec<&String> = set.iter().collect();
+    items.sort();
+    items.dedup();
+    let joined = items
+        .iter()
+        .map(|s| quote(s))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{{{joined}}}")
+}
+
 // ---- Tokenizer -----------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -423,6 +465,20 @@ mod tests {
     fn double_quotes_accepted() {
         let s = Selector::parse("k == \"v\"").unwrap();
         assert!(s.matches(&labels(&[("k", "v")])));
+    }
+
+    #[test]
+    fn canonical_display_is_stable_and_normalises_sets() {
+        // Set order/dupes canonicalise identically.
+        let a = Selector::parse("env in {'b', 'a', 'b'}").unwrap();
+        let b = Selector::parse("env in {'a', 'b'}").unwrap();
+        assert_eq!(a.to_string(), b.to_string());
+        assert_eq!(a.to_string(), "env in {\"a\", \"b\"}");
+
+        // Compound forms round-trip through parse to the same canonical string.
+        let s = Selector::parse("!(a == '1') && b != '2'").unwrap();
+        let reparsed = Selector::parse(&s.to_string()).unwrap();
+        assert_eq!(s.to_string(), reparsed.to_string());
     }
 
     #[test]
