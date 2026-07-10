@@ -10,6 +10,11 @@ use serde::Deserialize;
 use sha1::{Digest, Sha1};
 
 pub mod result;
+pub mod sysctl;
+pub mod wep;
+
+#[cfg(unix)]
+pub mod lock;
 
 #[cfg(target_os = "linux")]
 pub mod dataplane;
