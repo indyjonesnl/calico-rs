@@ -110,6 +110,8 @@ spec:
               value: /host/opt/cni/bin
             - name: CNI_NET_DIR
               value: /host/etc/cni/net.d
+            - name: RUST_LOG
+              value: "info,felix=debug,calc=debug,datastore=debug"
           volumeMounts:
             - name: cni-bin-dir
               mountPath: /host/opt/cni/bin

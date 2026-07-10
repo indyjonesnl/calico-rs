@@ -16,5 +16,7 @@ apis = { version = "0.1.0", path = "../apis" }
 base64 = "0.22.1"
 datastore = { version = "0.1.0", path = "../datastore" }
 felix = { version = "0.1.0", path = "../felix" }
+reconcile = { version = "0.1.0", path = "../reconcile" }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
+tracing = { workspace = true }

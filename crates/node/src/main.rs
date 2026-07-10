@@ -16,16 +16,32 @@
 
 use std::time::Duration;
 
+mod retry;
 mod startup;
 
 const SELF_CNI_BIN: &str = "/opt/calico-rs/bin/calico";
 const KUBECONFIG_NAME: &str = "calico-rs-kubeconfig";
 const CONFLIST_NAME: &str = "10-calico.conflist";
 
+/// Bounded-retry policy for the startup datastore operations (T-HH): up to 10
+/// attempts, exponential backoff starting at 500ms and capped at 8s, so a
+/// transient connect error during cluster bring-up (apiserver/etcd still
+/// coming up) self-heals instead of fatal-exiting the pod into a crash-loop.
+const STARTUP_RETRY_MAX_ATTEMPTS: u32 = 10;
+const STARTUP_RETRY_INITIAL_BACKOFF: Duration = Duration::from_millis(500);
+const STARTUP_RETRY_MAX_BACKOFF: Duration = Duration::from_secs(8);
+
 #[tokio::main]
 async fn main() {
+    // Initialize tracing first, honoring RUST_LOG: felix/calc/datastore
+    // `tracing::{warn,info,debug}` events (watch errors, flush activity,
+    // manager apply errors/retries) are otherwise invisible, which is what
+    // blocked live debugging of the policy-propagation stall this fix
+    // addresses. Idempotent, so safe even if some future code path also
+    // calls it.
+    reconcile::init_tracing();
     if let Err(e) = run().await {
-        eprintln!("calico-rs-node: fatal: {e}");
+        tracing::error!(error = %e, "calico-rs-node: fatal");
         std::process::exit(1);
     }
 }
@@ -49,15 +65,34 @@ async fn run() -> Result<(), String> {
     );
 
     // Felix reconcile loops (in-cluster config via the pod's service account).
-    let backend = datastore::KddBackend::try_default()
-        .await
-        .map_err(|e| format!("connect datastore: {e}"))?;
+    // Connecting can transiently fail while the cluster is still coming up
+    // (e.g. apiserver not yet accepting connections); retry with backoff
+    // rather than fatal-exiting the pod into a crash-loop.
+    let backend = retry::retry_with_backoff(
+        STARTUP_RETRY_MAX_ATTEMPTS,
+        STARTUP_RETRY_INITIAL_BACKOFF,
+        STARTUP_RETRY_MAX_BACKOFF,
+        "connect datastore",
+        || async { datastore::KddBackend::try_default().await },
+    )
+    .await
+    .map_err(|e| format!("connect datastore: {e}"))?;
 
     // Baseline bootstrap: default IPPool, ClusterInformation (datastore_ready
     // gate the CNI plugin waits on), and this node's Calico Node CR. Must
     // happen before the reconcile loops start — they assume the baseline is
-    // already in place.
-    startup::startup(&backend, &nodename).await?;
+    // already in place. `startup::startup` is idempotent, so retrying it
+    // wholesale on any error (not just connection errors) is safe: a
+    // transient `list IPPool: client error (Connect)` self-heals instead of
+    // crash-looping the pod.
+    retry::retry_with_backoff(
+        STARTUP_RETRY_MAX_ATTEMPTS,
+        STARTUP_RETRY_INITIAL_BACKOFF,
+        STARTUP_RETRY_MAX_BACKOFF,
+        "datastore baseline bootstrap",
+        || startup::startup(&backend, &nodename),
+    )
+    .await?;
     println!("calico-rs-node: datastore baseline ensured (node={nodename})");
 
     // VXLAN overlay reconcile — runs in the host netns (this pod is hostNetwork),

@@ -1421,8 +1421,10 @@ dependencies = [
  "base64",
  "datastore",
  "felix",
+ "reconcile",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
