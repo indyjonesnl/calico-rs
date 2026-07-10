@@ -74,6 +74,7 @@ pub fn network_policy_to_eval(spec: &NetworkPolicySpec) -> Result<EvalPolicy, Se
         )
     };
     Ok(EvalPolicy {
+        name: None,
         selector: selector_or_all(&spec.selector)?,
         applies_ingress,
         applies_egress,
@@ -94,6 +95,7 @@ pub fn network_policy_to_eval(spec: &NetworkPolicySpec) -> Result<EvalPolicy, Se
 /// reference it (used as the evaluator's fallback layer).
 pub fn profile_to_eval(spec: &ProfileSpec) -> Result<EvalPolicy, SelectorError> {
     Ok(EvalPolicy {
+        name: None,
         selector: Selector::All,
         applies_ingress: true,
         applies_egress: true,

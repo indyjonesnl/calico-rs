@@ -11,6 +11,7 @@
 
 mod active_rules;
 mod event_sequencer;
+mod flowlogs;
 mod from_resources;
 mod graph;
 mod k8s_policy;
@@ -25,13 +26,14 @@ pub use active_rules::{
     ScanResult, ScanRule, Transition,
 };
 pub use event_sequencer::EventSequencer;
+pub use flowlogs::{flow_log, FlowLogRecord};
 pub use from_resources::{evaluator_from, network_policy_to_eval, profile_to_eval};
 pub use graph::{CalcGraph, GraphDeltas, ResourceUpdate};
 pub use k8s_policy::{k8s_network_policy_to_eval, K8sNetworkPolicySpec};
 pub use labelindex::{Delta, IpSetId, ItemId, Member, MemberChange, MembershipIndex, ParentId};
 pub use policy_eval::{
-    Decision, Direction, EvalPolicy, EvalRule, Packet, PolicyEvaluator, RuleAction, Tier,
-    TierDefault,
+    Decision, DecisionReason, Direction, EvalPolicy, EvalRule, Packet, PolicyEvaluator, RuleAction,
+    Tier, TierDefault, TracedDecision,
 };
 pub use policy_resolver::{
     sort_policies, sort_tiers, EndpointPolicyOrder, PolicyResolver, TierPolicies,

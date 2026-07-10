@@ -184,6 +184,7 @@ pub fn k8s_network_policy_to_eval(spec: &K8sNetworkPolicySpec, namespace: &str) 
     };
 
     EvalPolicy {
+        name: None,
         selector: subject,
         applies_ingress,
         applies_egress,
