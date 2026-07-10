@@ -1,15 +1,17 @@
-//! Integration test for the felix `EndpointManager` against real nftables. Runs
-//! `felix-endpoint-selftest` inside a rootless network namespace
-//! (`unshare --user --map-root-user --net`), proving that per-policy + per-endpoint
-//! chains are programmed non-destructively — the `IpSetManager`'s named set (in the
-//! same `inet calico` table) survives, i.e. no table flush. Skips where
+//! Integration test for the unified felix `PolicyTableManager` against real
+//! nftables. Runs `felix-policy-table-selftest` inside a rootless network
+//! namespace (`unshare --user --map-root-user --net`), proving the atomic
+//! full-table render programs sets + chains (with a resolving `@set` rule),
+//! is idempotent, and — crucially — is RESTART-SAFE: a fresh manager fed a
+//! different desired state flushes and rebuilds the table so stale objects are
+//! gone, with no delete statements to poison the transaction. Skips where
 //! unavailable.
 
 use std::process::Command;
 
 #[test]
 #[cfg(target_os = "linux")]
-fn endpoint_policy_programming_in_rootless_netns() {
+fn policy_table_programming_is_self_healing_in_rootless_netns() {
     if Command::new("unshare").arg("--version").output().is_err() {
         eprintln!("SKIP: `unshare` not available");
         return;
@@ -30,13 +32,13 @@ fn endpoint_policy_programming_in_rootless_netns() {
         }
     }
 
-    let bin = env!("CARGO_BIN_EXE_felix-endpoint-selftest");
+    let bin = env!("CARGO_BIN_EXE_felix-policy-table-selftest");
     let status = Command::new("unshare")
         .args(["--user", "--map-root-user", "--net", bin])
         .status()
-        .expect("run felix-endpoint-selftest under unshare");
+        .expect("run felix-policy-table-selftest under unshare");
     assert!(
         status.success(),
-        "felix-endpoint-selftest failed (exit {status:?})"
+        "felix-policy-table-selftest failed (exit {status:?})"
     );
 }

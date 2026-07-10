@@ -14,6 +14,7 @@ pub mod nft;
 pub mod nftables;
 pub mod policy_agent;
 pub mod policy_render;
+pub mod policy_table;
 pub mod reconcile;
 pub mod route_manager;
 pub mod vxlan;

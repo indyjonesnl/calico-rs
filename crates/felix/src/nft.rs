@@ -107,7 +107,7 @@ impl NftRule {
         self.comment = Some(c.into());
         self
     }
-    fn render(&self) -> String {
+    pub(crate) fn render(&self) -> String {
         let mut parts: Vec<String> = self.matches.iter().map(NftMatch::render).collect();
         parts.push(self.verdict.render());
         let mut line = parts.join(" ");
@@ -157,7 +157,7 @@ pub struct NftChain {
 impl NftChain {
     /// The base-chain declaration body (`type … hook … priority …; policy …;`) for
     /// an `add chain` statement, or `None` for a regular chain.
-    fn base_decl(&self) -> Option<String> {
+    pub(crate) fn base_decl(&self) -> Option<String> {
         self.base.as_ref().map(|b| {
             let pol = if b.policy_accept { "accept" } else { "drop" };
             format!(

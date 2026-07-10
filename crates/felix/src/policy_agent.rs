@@ -11,8 +11,9 @@
 //!                                                      │ tx.send (in order)
 //!                                                      ▼
 //!                                      mpsc ─► dataplane::run(InternalDataplane)
-//!                                                 ├─ IpSetManager  (nft named sets)
-//!                                                 └─ EndpointManager (nft chains)
+//!                                                 └─ PolicyTableManager
+//!                                                    (one atomic full-table render:
+//!                                                     sets + chains, self-healing)
 //! ```
 //!
 //! # Adapter (`syncer_update_to_resource`)
@@ -37,8 +38,8 @@
 //!
 //! ## endpoint id == interface name (documented simplification)
 //!
-//! The [`crate::endpoint_manager`] renders an endpoint's dispatch chains keyed by
-//! the proto `WorkloadEndpoint.name`, which it uses verbatim as the nft
+//! The [`crate::policy_table`] renderer keys an endpoint's dispatch chains by the
+//! proto `WorkloadEndpoint.name`, which it uses verbatim as the nft
 //! `iifname`/`oifname`. The event sequencer copies the calc endpoint id into that
 //! `name`. So for the chains to actually hook the pod's host veth, the calc
 //! endpoint identity MUST be the interface name — hence `id = spec.interfaceName`
@@ -58,9 +59,9 @@
 //!   fields are dropped in the mapping (the `namespaceSelector` is now folded,
 //!   not dropped).
 //! - **Privilege**: [`run_policy_dataplane`] programs real nftables via
-//!   `IpSetManager::with_nft` / `EndpointManager::with_nft`; those only succeed in
-//!   the privileged node DaemonSet (or a netns with `nft`). Off-node the loop runs
-//!   but the apply rounds fail and retry.
+//!   `PolicyTableManager::with_nft`; that only succeeds in the privileged node
+//!   DaemonSet (or a netns with `nft`). Off-node the loop runs but the apply rounds
+//!   fail and retry.
 
 use std::collections::BTreeMap;
 
@@ -72,8 +73,7 @@ use proto::{DataplaneSink, ToDataplane};
 use tokio::sync::mpsc;
 
 use crate::dataplane::{self, InternalDataplane};
-use crate::endpoint_manager::EndpointManager;
-use crate::ipset_manager::IpSetManager;
+use crate::policy_table::PolicyTableManager;
 
 /// Bound on the buffered `ToDataplane` messages between the flush and the
 /// dataplane apply loop.
@@ -250,11 +250,13 @@ async fn flush_to_channel(
 /// namespaces, driving `datastore → adapter → CalcGraph → EventSequencer →
 /// dataplane` for every event. Returns when the watch stream ends.
 pub async fn run_policy_dataplane(backend: KddBackend, local_node: String) -> Result<(), String> {
-    // Managers program the shared `inet calico` table non-destructively:
-    // IpSetManager (named sets) then EndpointManager (chains that reference them).
+    // ONE table-owning manager renders the ENTIRE `inet calico` table (named sets
+    // + policy/profile/dispatch chains + the forward base chain) and applies it as
+    // a single atomic, self-healing `nft -f -` document each reconcile. This
+    // replaces the earlier two-manager delta design (IpSetManager + EndpointManager)
+    // whose separate transactions poisoned each other on restart/churn.
     let mut idp = InternalDataplane::new();
-    idp.add_manager(Box::new(IpSetManager::with_nft()));
-    idp.add_manager(Box::new(EndpointManager::with_nft()));
+    idp.add_manager(Box::new(PolicyTableManager::with_nft()));
 
     let (tx, rx) = mpsc::channel::<ToDataplane>(CHANNEL_CAPACITY);
 
