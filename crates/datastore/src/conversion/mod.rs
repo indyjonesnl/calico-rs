@@ -17,6 +17,8 @@
 //! - `backend/k8s/resources/resources.go` — the `projectcalico.org/metadata`
 //!   annotation used to round-trip resource metadata through CRD storage.
 
+pub mod policy;
+
 use std::collections::BTreeMap;
 
 use apis::{NodeBgpSpec, NodeSpec, OrchRef, ProfileSpec, WorkloadEndpointSpec};
