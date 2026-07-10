@@ -34,8 +34,11 @@
 //!   Calico's open-by-default is the per-namespace `kns.<ns>` allow-all profile.
 //! - **Per-endpoint dispatch chain** `cali-tw-<iface>` (to-workload / ingress) and
 //!   `cali-fw-<iface>` (from-workload / egress): `jump` to each of the endpoint's
-//!   tier policies in order, then to each of its profiles, then a terminal `drop`
-//!   (Calico's per-endpoint default-deny for a selected workload).
+//!   tier policies in order; then, **only if no policy selects the endpoint in that
+//!   direction**, `jump` to its profiles (the open-by-default fallback); then a
+//!   terminal `drop` (Calico's per-endpoint default-deny). A policy-selected
+//!   endpoint therefore ends at the end-of-policy drop and does NOT fall through to
+//!   its profiles — this gates profiles per-direction (ingress/egress independent).
 //! - **Base dispatch chain** `cali-forward` (filter/forward hook): for each
 //!   endpoint, `oifname <iface> jump cali-tw-<iface>` (traffic *to* the pod) and
 //!   `iifname <iface> jump cali-fw-<iface>` (traffic *from* the pod).
@@ -383,9 +386,12 @@ impl<A: ChainApplier> EndpointManager<A> {
     }
 
     /// The rules for one endpoint's dispatch chain: a `jump` to each tier policy in
-    /// order (flattening tiers — see the multi-tier simplification note), then the
-    /// end-of-endpoint default-deny `drop`. Ensures a (possibly empty stub) chain
-    /// exists for every referenced policy so all jumps resolve.
+    /// order (flattening tiers — see the multi-tier simplification note); then, only
+    /// when NO policy selects the endpoint in this direction, a `jump` to each of its
+    /// profiles (the open-by-default fallback); then the end-of-endpoint default-deny
+    /// `drop`. A policy-selected endpoint skips the profile fallback and relies on the
+    /// end-of-policy drop. Ensures a (possibly empty stub) chain exists for every
+    /// referenced policy — and every jumped profile — so all jumps resolve.
     fn dispatch_rules(
         &self,
         ep: &WorkloadEndpoint,
@@ -393,6 +399,7 @@ impl<A: ChainApplier> EndpointManager<A> {
         chains: &mut BTreeMap<String, NftChain>,
     ) -> Vec<NftRule> {
         let mut rules = Vec::new();
+        let mut policy_selected = false;
         for tier in &ep.tiers {
             let names = match dir {
                 Direction::Ingress => &tier.ingress_policies,
@@ -410,18 +417,26 @@ impl<A: ChainApplier> EndpointManager<A> {
                     .entry(cn.clone())
                     .or_insert_with(|| NftChain::regular(cn.clone(), Vec::new()));
                 rules.push(NftRule::new(Verdict::Jump(cn)));
+                policy_selected = true;
             }
         }
-        // After the tier policies, jump the endpoint's profiles in order. A profile
-        // Allow accepts; otherwise control falls through to the default-deny below.
-        for prof in &ep.profile_ids {
-            let cn = profile_chain_name(prof, dir);
-            // Stub an empty chain for a referenced-but-unknown profile so the jump
-            // resolves; an empty chain falls through to the default-deny.
-            chains
-                .entry(cn.clone())
-                .or_insert_with(|| NftChain::regular(cn.clone(), Vec::new()));
-            rules.push(NftRule::new(Verdict::Jump(cn)));
+        // Profiles are the fallback consulted ONLY when NO policy selects this
+        // endpoint in this direction (Calico's open-by-default per-namespace
+        // `kns.<ns>` allow profile). If ≥1 policy selected the endpoint, the policy
+        // chains govern and control falls through to the end-of-policy default-deny
+        // below — no profile fall-through. This is per-direction: an endpoint may be
+        // policy-governed on ingress yet fall back to profiles on egress. A profile
+        // Allow accepts; a non-match falls through to the default-deny below.
+        if !policy_selected {
+            for prof in &ep.profile_ids {
+                let cn = profile_chain_name(prof, dir);
+                // Stub an empty chain for a referenced-but-unknown profile so the
+                // jump resolves; an empty chain falls through to the default-deny.
+                chains
+                    .entry(cn.clone())
+                    .or_insert_with(|| NftChain::regular(cn.clone(), Vec::new()));
+                rules.push(NftRule::new(Verdict::Jump(cn)));
+            }
         }
         let dir_label = match dir {
             Direction::Ingress => "ingress",
@@ -854,7 +869,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_order_is_policy_then_profile_then_drop() {
+    async fn policy_selected_endpoint_does_not_fall_through_to_profile() {
+        // Isolation semantic: an endpoint selected by a policy in a direction ends
+        // at the end-of-policy default-deny; profiles are NOT consulted. Here the
+        // policy only allows from `s:web`; unmatched traffic must DROP, and must
+        // NOT fall through to the default-allow profile.
         let spy = SpyApplier::default();
         let mut mgr = EndpointManager::new(spy.clone());
         mgr.on_update(&pol_update("default", "allow-web", allow_from_set("s:web")));
@@ -867,21 +886,96 @@ mod tests {
 
         let doc = spy.last();
         let tw = "cali-tw-cali123";
-        let pol = doc
-            .find(&format!(
+        // Ingress: the policy is jumped, then the default deny — no profile jump.
+        assert!(
+            doc.contains(&format!(
                 "add rule inet calico {tw} jump cali-pi-default-allow-web"
-            ))
-            .expect("policy jump");
+            )),
+            "ingress jumps the selecting policy: {doc}"
+        );
+        assert!(
+            !doc.contains(&format!(
+                "add rule inet calico {tw} jump cali-pri-kns.nettest"
+            )),
+            "policy-selected ingress must NOT fall through to the profile: {doc}"
+        );
+        assert!(
+            doc.contains(&format!(
+                "add rule inet calico {tw} drop comment \"default deny (ingress)\""
+            )),
+            "ingress still ends in default deny: {doc}"
+        );
+    }
+
+    #[tokio::test]
+    async fn policy_that_allows_is_jumped_profile_not() {
+        // A policy that DOES allow the traffic: the policy chain accepts, and the
+        // profile is still not jumped (selection, not verdict, gates the fallback).
+        let spy = SpyApplier::default();
+        let mut mgr = EndpointManager::new(spy.clone());
+        mgr.on_update(&pol_update("default", "allow-web", allow_from_set("s:web")));
+        mgr.on_update(&prof_update("kns.nettest", allow_all_profile()));
+
+        let mut ep = endpoint_with_ingress("cali123", "default", &["allow-web"]);
+        ep.profile_ids = vec!["kns.nettest".into()];
+        mgr.on_update(&wep_update("cali123", ep));
+        mgr.complete_deferred_work().await.unwrap();
+
+        let doc = spy.last();
+        // The policy chain carries the accept for the allowed source.
+        assert!(doc.contains(&format!(
+            "add rule inet calico cali-pi-default-allow-web ip saddr @{} accept",
+            set_name_for("s:web")
+        )));
+        // No profile jump in the policy-selected direction.
+        assert!(
+            !doc.contains("add rule inet calico cali-tw-cali123 jump cali-pri-kns.nettest"),
+            "profile not jumped when a policy selects the endpoint: {doc}"
+        );
+    }
+
+    #[tokio::test]
+    async fn profile_fallback_is_per_direction() {
+        // Per-direction independence: an ingress policy but NO egress policy.
+        // Ingress = policy + drop (no profile). Egress has no policy, so it still
+        // falls back to the profile chain + drop.
+        let spy = SpyApplier::default();
+        let mut mgr = EndpointManager::new(spy.clone());
+        mgr.on_update(&pol_update("default", "allow-web", allow_from_set("s:web")));
+        mgr.on_update(&prof_update("kns.nettest", allow_all_profile()));
+
+        let mut ep = endpoint_with_ingress("cali123", "default", &["allow-web"]);
+        ep.profile_ids = vec!["kns.nettest".into()];
+        mgr.on_update(&wep_update("cali123", ep));
+        mgr.complete_deferred_work().await.unwrap();
+
+        let doc = spy.last();
+        let tw = "cali-tw-cali123"; // ingress (to-workload)
+        let fw = "cali-fw-cali123"; // egress (from-workload)
+
+        // Ingress: policy jumped, profile NOT jumped.
+        assert!(doc.contains(&format!(
+            "add rule inet calico {tw} jump cali-pi-default-allow-web"
+        )));
+        assert!(
+            !doc.contains(&format!(
+                "add rule inet calico {tw} jump cali-pri-kns.nettest"
+            )),
+            "ingress is policy-governed → no profile fallback: {doc}"
+        );
+
+        // Egress: no policy → profile jumped as the fallback, before the drop.
         let prof = doc
             .find(&format!(
-                "add rule inet calico {tw} jump cali-pri-kns.nettest"
+                "add rule inet calico {fw} jump cali-pro-kns.nettest"
             ))
-            .expect("profile jump");
+            .expect("egress falls back to the profile chain");
         let drop = doc
-            .find(&format!("add rule inet calico {tw} drop"))
-            .expect("default deny");
-        assert!(pol < prof, "policy jumps precede profile jumps");
-        assert!(prof < drop, "profile jumps precede the default deny");
+            .find(&format!(
+                "add rule inet calico {fw} drop comment \"default deny (egress)\""
+            ))
+            .expect("egress default deny");
+        assert!(prof < drop, "egress profile jump precedes its default deny");
     }
 
     #[tokio::test]
