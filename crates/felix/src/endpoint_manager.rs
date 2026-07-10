@@ -28,10 +28,14 @@
 //!   when it does not match, so control returns to the dispatch chain and the next
 //!   policy is tried. Action mapping: `Allow→accept`, `Deny→drop`, `Pass→return`,
 //!   `Log→`(skipped — no terminal verdict emitted yet).
+//! - **Per-profile chain** `cali-pri-<id>` (ingress) / `cali-pro-<id>` (egress):
+//!   the translated profile rules, with NO trailing drop. A profile `Allow`
+//!   accepts; a non-match falls through to the endpoint chain's default-deny.
+//!   Calico's open-by-default is the per-namespace `kns.<ns>` allow-all profile.
 //! - **Per-endpoint dispatch chain** `cali-tw-<iface>` (to-workload / ingress) and
 //!   `cali-fw-<iface>` (from-workload / egress): `jump` to each of the endpoint's
-//!   tier policies in order, then a terminal `drop` (Calico's per-endpoint
-//!   default-deny for a selected workload).
+//!   tier policies in order, then to each of its profiles, then a terminal `drop`
+//!   (Calico's per-endpoint default-deny for a selected workload).
 //! - **Base dispatch chain** `cali-forward` (filter/forward hook): for each
 //!   endpoint, `oifname <iface> jump cali-tw-<iface>` (traffic *to* the pod) and
 //!   `iifname <iface> jump cali-fw-<iface>` (traffic *from* the pod).
@@ -39,11 +43,9 @@
 //! ### Multi-tier simplification (documented, per the US2 target)
 //!
 //! The dispatch chain flattens all of an endpoint's tiers into one ordered list of
-//! policy jumps followed by a single end-of-endpoint default-deny. It does **not**
-//! yet implement per-tier `pass`/`next-tier` fall-through semantics or profile
-//! chains for unselected endpoints (US2 conformance target is label-selector
-//! allow/deny + default-deny, which this covers: selected endpoint → its ordered
-//! policies → default-deny). Per-tier boundaries and profiles are a follow-up.
+//! policy jumps, then the endpoint's profile jumps, followed by a single
+//! end-of-endpoint default-deny. It does **not** yet implement per-tier
+//! `pass`/`next-tier` fall-through semantics. Per-tier boundaries are a follow-up.
 //!
 //! `on_update` only mutates in-memory desired state (cheap, no I/O); all kernel
 //! work happens in the async `complete_deferred_work`.
@@ -100,6 +102,29 @@ fn policy_chain_name(id: &PolicyId, dir: Direction) -> String {
         Direction::Egress => "cali-po",
     };
     format!("{prefix}-{}-{}", sanitize(&id.tier), sanitize(&id.name))
+}
+
+/// Deterministic per-profile chain name, e.g. `cali-pri-kns.nettest` (ingress) /
+/// `cali-pro-kns.nettest` (egress). Mirrors [`policy_chain_name`] but profiles are
+/// tier-less, so the id is the sole discriminator.
+fn profile_chain_name(id: &str, dir: Direction) -> String {
+    let prefix = match dir {
+        Direction::Ingress => "cali-pri",
+        Direction::Egress => "cali-pro",
+    };
+    // Profile ids (e.g. `kns.nettest`) carry a `.` that nft accepts unquoted and
+    // that Calico preserves in the chain name, so keep it (unlike `sanitize`).
+    let safe: String = id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    format!("{prefix}-{safe}")
 }
 
 /// Per-endpoint dispatch chain name for a given interface and direction.
@@ -227,7 +252,8 @@ pub trait ChainApplier {
 pub struct EndpointManager<A: ChainApplier> {
     /// Active policies by id (source of the per-policy chains' rules).
     policies: BTreeMap<PolicyId, Policy>,
-    /// Active profiles by id (stored; profile chains are a follow-up).
+    /// Active profiles by id (source of the per-profile `cali-pri`/`cali-pro`
+    /// chains; supply Calico's open-by-default via the `kns.<ns>` allow profile).
     profiles: BTreeMap<String, Policy>,
     /// Local workload endpoints by id (source of the dispatch chains).
     endpoints: BTreeMap<WorkloadEndpointId, WorkloadEndpoint>,
@@ -301,7 +327,26 @@ impl<A: ChainApplier> EndpointManager<A> {
             chains.insert(ename.clone(), NftChain::regular(ename, erules));
         }
 
-        // 2. Per-endpoint dispatch chains + the aggregating base forward chain.
+        // 2. Per-profile chains (ingress + egress) from the resolved proto rules.
+        //    Unlike policy chains these carry NO trailing drop: a profile Allow
+        //    accepts, otherwise control falls through to the endpoint chain's
+        //    end-of-endpoint default-deny (open-by-default comes from the
+        //    per-namespace `kns.<ns>` allow-all profile).
+        for (id, profile) in &self.profiles {
+            let iname = profile_chain_name(id, Direction::Ingress);
+            let irules = profile.inbound_rules.iter().flat_map(render_rule).collect();
+            chains.insert(iname.clone(), NftChain::regular(iname, irules));
+
+            let ename = profile_chain_name(id, Direction::Egress);
+            let erules = profile
+                .outbound_rules
+                .iter()
+                .flat_map(render_rule)
+                .collect();
+            chains.insert(ename.clone(), NftChain::regular(ename, erules));
+        }
+
+        // 3. Per-endpoint dispatch chains + the aggregating base forward chain.
         let mut forward_rules: Vec<NftRule> = Vec::new();
         for ep in self.endpoints.values() {
             let iface = &ep.name;
@@ -366,6 +411,17 @@ impl<A: ChainApplier> EndpointManager<A> {
                     .or_insert_with(|| NftChain::regular(cn.clone(), Vec::new()));
                 rules.push(NftRule::new(Verdict::Jump(cn)));
             }
+        }
+        // After the tier policies, jump the endpoint's profiles in order. A profile
+        // Allow accepts; otherwise control falls through to the default-deny below.
+        for prof in &ep.profile_ids {
+            let cn = profile_chain_name(prof, dir);
+            // Stub an empty chain for a referenced-but-unknown profile so the jump
+            // resolves; an empty chain falls through to the default-deny.
+            chains
+                .entry(cn.clone())
+                .or_insert_with(|| NftChain::regular(cn.clone(), Vec::new()));
+            rules.push(NftRule::new(Verdict::Jump(cn)));
         }
         let dir_label = match dir {
             Direction::Ingress => "ingress",
@@ -708,6 +764,141 @@ mod tests {
         mgr.complete_deferred_work().await.unwrap();
         assert!(spy.last().contains("cali-pi-default-allow-web"));
         assert_eq!(mgr.pending_count(), 0, "reconciled after retry");
+    }
+
+    // ---- profile chain tests ---------------------------------------------
+
+    fn allow_all_profile() -> Policy {
+        Policy {
+            inbound_rules: vec![PolicyRule {
+                action_field: Some(RuleAction::Allow),
+                ..Default::default()
+            }],
+            outbound_rules: vec![PolicyRule {
+                action_field: Some(RuleAction::Allow),
+                ..Default::default()
+            }],
+        }
+    }
+
+    fn prof_update(id: &str, profile: Policy) -> ToDataplane {
+        ToDataplane::ActiveProfileUpdate {
+            id: id.into(),
+            profile,
+        }
+    }
+
+    fn endpoint_with_profiles(iface: &str, profiles: &[&str]) -> WorkloadEndpoint {
+        WorkloadEndpoint {
+            name: iface.into(),
+            profile_ids: profiles.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn default_allow_profile_jumps_profile_chain_not_bare_drop() {
+        let spy = SpyApplier::default();
+        let mut mgr = EndpointManager::new(spy.clone());
+
+        // Open-by-default: per-namespace profile with ingress Allow, no policy.
+        mgr.on_update(&prof_update("kns.nettest", allow_all_profile()));
+        mgr.on_update(&wep_update(
+            "cali123",
+            endpoint_with_profiles("cali123", &["kns.nettest"]),
+        ));
+        mgr.complete_deferred_work().await.unwrap();
+
+        let doc = spy.last();
+        // Ingress profile chain rendered with an accept (open-by-default).
+        assert!(doc.contains("add chain inet calico cali-pri-kns.nettest"));
+        assert!(doc.contains("add rule inet calico cali-pri-kns.nettest accept"));
+
+        // The to-workload dispatch chain JUMPS to the profile chain BEFORE its drop.
+        let tw = "cali-tw-cali123";
+        let jump = doc
+            .find(&format!(
+                "add rule inet calico {tw} jump cali-pri-kns.nettest"
+            ))
+            .expect("dispatch jumps to ingress profile chain");
+        let drop = doc
+            .find(&format!(
+                "add rule inet calico {tw} drop comment \"default deny (ingress)\""
+            ))
+            .expect("dispatch still has final default deny");
+        assert!(jump < drop, "profile jump precedes the default deny");
+    }
+
+    #[tokio::test]
+    async fn profile_update_then_remove_renders_then_drops_chain() {
+        let spy = SpyApplier::default();
+        let mut mgr = EndpointManager::new(spy.clone());
+        mgr.on_update(&prof_update("kns.nettest", allow_all_profile()));
+        mgr.on_update(&wep_update(
+            "cali123",
+            endpoint_with_profiles("cali123", &["kns.nettest"]),
+        ));
+        mgr.complete_deferred_work().await.unwrap();
+        assert!(spy.last().contains("cali-pri-kns.nettest accept"));
+        spy.clear();
+
+        // Removing the profile: the endpoint still references it, so a bare stub
+        // chain remains (jump resolves), but its accept rule is gone → drop wins.
+        mgr.on_update(&ToDataplane::ActiveProfileRemove("kns.nettest".into()));
+        mgr.complete_deferred_work().await.unwrap();
+        let doc = spy.last();
+        assert!(
+            !doc.contains("cali-pri-kns.nettest accept"),
+            "accept rule gone after profile removed: {doc}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_order_is_policy_then_profile_then_drop() {
+        let spy = SpyApplier::default();
+        let mut mgr = EndpointManager::new(spy.clone());
+        mgr.on_update(&pol_update("default", "allow-web", allow_from_set("s:web")));
+        mgr.on_update(&prof_update("kns.nettest", allow_all_profile()));
+
+        let mut ep = endpoint_with_ingress("cali123", "default", &["allow-web"]);
+        ep.profile_ids = vec!["kns.nettest".into()];
+        mgr.on_update(&wep_update("cali123", ep));
+        mgr.complete_deferred_work().await.unwrap();
+
+        let doc = spy.last();
+        let tw = "cali-tw-cali123";
+        let pol = doc
+            .find(&format!(
+                "add rule inet calico {tw} jump cali-pi-default-allow-web"
+            ))
+            .expect("policy jump");
+        let prof = doc
+            .find(&format!(
+                "add rule inet calico {tw} jump cali-pri-kns.nettest"
+            ))
+            .expect("profile jump");
+        let drop = doc
+            .find(&format!("add rule inet calico {tw} drop"))
+            .expect("default deny");
+        assert!(pol < prof, "policy jumps precede profile jumps");
+        assert!(prof < drop, "profile jumps precede the default deny");
+    }
+
+    #[tokio::test]
+    async fn endpoint_with_no_policy_or_profile_is_bare_drop() {
+        let spy = SpyApplier::default();
+        let mut mgr = EndpointManager::new(spy.clone());
+        mgr.on_update(&wep_update(
+            "cali123",
+            endpoint_with_profiles("cali123", &[]),
+        ));
+        mgr.complete_deferred_work().await.unwrap();
+        let doc = spy.last();
+        // No jumps at all — the dispatch chain is just the default deny.
+        assert!(!doc.contains("cali-tw-cali123 jump"));
+        assert!(doc.contains(
+            "add rule inet calico cali-tw-cali123 drop comment \"default deny (ingress)\""
+        ));
     }
 
     #[tokio::test]
