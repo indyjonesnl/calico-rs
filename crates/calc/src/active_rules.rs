@@ -90,13 +90,28 @@ pub fn ip_set_id(selector: &Selector) -> IpSetId {
 // ---- ActiveRulesCalculator -----------------------------------------------
 
 /// An active/inactive transition for a policy or profile.
+///
+/// `PolicyActive`/`ProfileActive` is also re-emitted for an owner that was
+/// *already* active when its rules change (selector membership unchanged): a
+/// caller driving a [`RuleScanner`] off these transitions must re-scan on
+/// every rules change, not just on the active-set edge, or stale rule-peer
+/// selectors are left registered as IP sets. Re-invoking
+/// [`RuleScanner::on_policy_active`]/[`RuleScanner::on_profile_active`] with
+/// the same (still-active) owner id is safe and idempotent: `reconcile_owner`
+/// diffs the owner's previously-wanted IP-set ids against the newly-wanted
+/// ones, so it unregisters removed selectors and registers added ones while
+/// leaving unchanged ones (and their ref-counts) untouched. This mirrors
+/// upstream Felix re-sending active policies to its rule scanner on every
+/// update.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Transition {
-    /// A policy's selector started matching a local endpoint.
+    /// A policy's selector started matching a local endpoint, OR an
+    /// already-active policy's rules changed.
     PolicyActive(PolicyId),
     /// A policy's selector stopped matching any local endpoint.
     PolicyInactive(PolicyId),
-    /// A profile became referenced by a local endpoint (and its rules are known).
+    /// A profile became referenced by a local endpoint (and its rules are
+    /// known), OR an already-active profile's rules changed.
     ProfileActive(ProfileId),
     /// A profile stopped being referenced (or its rules were removed while active).
     ProfileInactive(ProfileId),
@@ -104,7 +119,7 @@ pub enum Transition {
 
 /// A rule prepared for scanning: peer selectors already parsed and combined,
 /// CIDR/port matches carried through verbatim.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScanRule {
     /// Rule action.
     pub action: Action,
@@ -124,7 +139,7 @@ pub struct ScanRule {
 }
 
 /// A policy or profile's inbound/outbound rules prepared for scanning.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PolicyRules {
     /// Inbound (ingress) rules.
     pub inbound: Vec<ScanRule>,
@@ -180,11 +195,18 @@ impl ActiveRulesCalculator {
 
     /// Insert or replace a policy from its v3 spec. Fails only if a selector
     /// does not parse. Returns the resulting transitions.
+    ///
+    /// If the policy is already active and its rules changed (its applies-to
+    /// selector still matches, so `recompute` would otherwise emit nothing),
+    /// a [`Transition::PolicyActive`] is re-emitted so a caller driving a
+    /// [`RuleScanner`] re-scans the new rules. No transition is emitted when
+    /// the rules are unchanged (idempotent).
     pub fn on_policy_update(
         &mut self,
         id: impl Into<PolicyId>,
         spec: &NetworkPolicySpec,
     ) -> Result<Vec<Transition>, SelectorError> {
+        let id = id.into();
         let stored = StoredPolicy {
             selector: selector_or_all(&spec.selector)?,
             rules: PolicyRules {
@@ -192,8 +214,19 @@ impl ActiveRulesCalculator {
                 outbound: scan_rules(&spec.egress)?,
             },
         };
-        self.policies.insert(id.into(), stored);
-        Ok(self.recompute())
+        let rules_changed = self
+            .policies
+            .get(&id)
+            .is_some_and(|old| old.rules != stored.rules);
+        let was_active = self.active_policies.contains(&id);
+        self.policies.insert(id.clone(), stored);
+        let mut transitions = self.recompute();
+        if rules_changed && was_active && self.active_policies.contains(&id) {
+            // Stayed active across the update: recompute's set-diff can't
+            // have emitted anything for this id, so this can't duplicate it.
+            transitions.push(Transition::PolicyActive(id));
+        }
+        Ok(transitions)
     }
 
     /// Remove a policy. Returns the resulting transitions.
@@ -203,17 +236,30 @@ impl ActiveRulesCalculator {
     }
 
     /// Insert or replace a profile's rules. Returns the resulting transitions.
+    ///
+    /// If the profile is already active and its rules changed, a
+    /// [`Transition::ProfileActive`] is re-emitted so a caller driving a
+    /// [`RuleScanner`] re-scans the new rules (see [`Self::on_policy_update`]
+    /// for the policy equivalent). No transition is emitted when the rules
+    /// are unchanged (idempotent).
     pub fn on_profile_update(
         &mut self,
         id: impl Into<ProfileId>,
         spec: &ProfileSpec,
     ) -> Result<Vec<Transition>, SelectorError> {
+        let id = id.into();
         let rules = PolicyRules {
             inbound: scan_rules(&spec.ingress)?,
             outbound: scan_rules(&spec.egress)?,
         };
-        self.profiles.insert(id.into(), rules);
-        Ok(self.recompute())
+        let rules_changed = self.profiles.get(&id).is_some_and(|old| *old != rules);
+        let was_active = self.active_profiles.contains(&id);
+        self.profiles.insert(id.clone(), rules);
+        let mut transitions = self.recompute();
+        if rules_changed && was_active && self.active_profiles.contains(&id) {
+            transitions.push(Transition::ProfileActive(id));
+        }
+        Ok(transitions)
     }
 
     /// Remove a profile's rules. Returns the resulting transitions.
@@ -674,6 +720,82 @@ mod tests {
     }
 
     #[test]
+    fn rules_change_while_policy_stays_active_reemits_policy_active() {
+        let mut arc = ActiveRulesCalculator::new();
+        arc.on_policy_update(
+            "p1",
+            &spec(
+                r#"{"selector":"role == 'db'","types":["Ingress"],
+                    "ingress":[{"action":"Allow","source":{"selector":"role == 'web'"}}]}"#,
+            ),
+        )
+        .unwrap();
+        arc.on_endpoint_update("ep1", labels(&[("role", "db")]), vec![]);
+        assert!(arc.is_policy_active("p1"));
+
+        // Rules change (peer selector swapped) but the applies-to selector
+        // still matches ep1: the policy stays active, yet PolicyActive is
+        // re-emitted so a rule-scanner caller re-scans.
+        let t = arc
+            .on_policy_update(
+                "p1",
+                &spec(
+                    r#"{"selector":"role == 'db'","types":["Ingress"],
+                        "ingress":[{"action":"Allow","source":{"selector":"role == 'app'"}}]}"#,
+                ),
+            )
+            .unwrap();
+        assert_eq!(t, vec![Transition::PolicyActive("p1".into())]);
+        assert!(arc.is_policy_active("p1"));
+
+        // Idempotency: re-applying IDENTICAL rules emits nothing.
+        let t = arc
+            .on_policy_update(
+                "p1",
+                &spec(
+                    r#"{"selector":"role == 'db'","types":["Ingress"],
+                        "ingress":[{"action":"Allow","source":{"selector":"role == 'app'"}}]}"#,
+                ),
+            )
+            .unwrap();
+        assert!(t.is_empty());
+    }
+
+    #[test]
+    fn rules_change_while_profile_stays_active_reemits_profile_active() {
+        let mut arc = ActiveRulesCalculator::new();
+        arc.on_profile_update(
+            "prof1",
+            &profile(r#"{"ingress":[{"action":"Allow","source":{"selector":"role == 'web'"}}]}"#),
+        )
+        .unwrap();
+        arc.on_endpoint_update("ep1", labels(&[]), vec!["prof1".into()]);
+        assert!(arc.is_profile_active("prof1"));
+
+        let t = arc
+            .on_profile_update(
+                "prof1",
+                &profile(
+                    r#"{"ingress":[{"action":"Allow","source":{"selector":"role == 'app'"}}]}"#,
+                ),
+            )
+            .unwrap();
+        assert_eq!(t, vec![Transition::ProfileActive("prof1".into())]);
+        assert!(arc.is_profile_active("prof1"));
+
+        // Idempotency: identical rules re-applied emit nothing.
+        let t = arc
+            .on_profile_update(
+                "prof1",
+                &profile(
+                    r#"{"ingress":[{"action":"Allow","source":{"selector":"role == 'app'"}}]}"#,
+                ),
+            )
+            .unwrap();
+        assert!(t.is_empty());
+    }
+
+    #[test]
     fn profile_active_iff_referenced_by_local_endpoint() {
         let mut arc = ActiveRulesCalculator::new();
         arc.on_profile_update("prof1", &profile(r#"{"ingress":[{"action":"Allow"}]}"#))
@@ -890,5 +1012,60 @@ mod tests {
             }
         }
         assert!(!rs.is_ip_set_active(&peer_id));
+    }
+
+    #[test]
+    fn rules_change_while_active_reregisters_scanner_ip_sets() {
+        // Gap fix (T052 review): a policy stays active but its rule peer
+        // selector changes. The re-emitted PolicyActive transition must drive
+        // the RuleScanner to unregister the OLD selector's ip-set and
+        // register the NEW one, with ref-counts staying correct — otherwise
+        // a caller only reacting to active-set edges would leave the old
+        // selector's ip-set stuck registered and never learn about the new
+        // one.
+        let mut arc = ActiveRulesCalculator::new();
+        let mut rs = RuleScanner::new();
+        let old_spec = spec(
+            r#"{"selector":"role == 'db'","types":["Ingress"],
+                "ingress":[{"action":"Allow","source":{"selector":"role == 'web'"}}]}"#,
+        );
+        let new_spec = spec(
+            r#"{"selector":"role == 'db'","types":["Ingress"],
+                "ingress":[{"action":"Allow","source":{"selector":"role == 'app'"}}]}"#,
+        );
+        let old_peer_id = ip_set_id(&sel("role == 'web'"));
+        let new_peer_id = ip_set_id(&sel("role == 'app'"));
+
+        arc.on_policy_update("p1", &old_spec).unwrap();
+        let transitions = arc.on_endpoint_update("ep1", labels(&[("role", "db")]), vec![]);
+        assert_eq!(transitions, vec![Transition::PolicyActive("p1".into())]);
+        rs.on_policy_active("p1", arc.policy_rules("p1").unwrap());
+        assert!(rs.is_ip_set_active(&old_peer_id));
+        assert!(!rs.is_ip_set_active(&new_peer_id));
+
+        // Rules change while the policy stays active (selector still matches
+        // ep1): PolicyActive is re-emitted, not PolicyInactive/silence.
+        let transitions = arc.on_policy_update("p1", &new_spec).unwrap();
+        assert_eq!(transitions, vec![Transition::PolicyActive("p1".into())]);
+        assert!(arc.is_policy_active("p1"));
+
+        // Driving the scanner off that transition re-scans: old selector's
+        // ip-set is unregistered, new one is registered, ref-counts correct.
+        let r = rs.on_policy_active("p1", arc.policy_rules("p1").unwrap());
+        assert_eq!(r.newly_inactive, vec![old_peer_id.clone()]);
+        assert_eq!(r.newly_active, vec![new_peer_id.clone()]);
+        assert!(!rs.is_ip_set_active(&old_peer_id));
+        assert!(rs.is_ip_set_active(&new_peer_id));
+
+        // Idempotency: re-applying IDENTICAL (new) rules must not re-emit a
+        // transition, so a transition-driven caller does not re-scan at all.
+        let transitions = arc.on_policy_update("p1", &new_spec).unwrap();
+        assert!(transitions.is_empty());
+        // And even if the scanner were re-driven anyway, re-scanning
+        // unchanged rules is a no-op: no spurious (un)registration.
+        let r = rs.on_policy_active("p1", arc.policy_rules("p1").unwrap());
+        assert!(r.newly_active.is_empty());
+        assert!(r.newly_inactive.is_empty());
+        assert!(rs.is_ip_set_active(&new_peer_id));
     }
 }
