@@ -15,6 +15,7 @@ members = [
     "crates/controllers",
     "crates/bgp",
     "crates/calicoctl",
+    "crates/e2e",
 ]
 
 [workspace.package]
