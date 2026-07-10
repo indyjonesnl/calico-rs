@@ -96,7 +96,23 @@ fn cmd_add(netconf: &cni::NetConf) -> Result<String, String> {
     let cni_args = env_or("CNI_ARGS", "");
     let node = node_name();
     let ids = identifiers_from_cni_args(&cni_args, &container_id, &node);
-    let handle_id = format!("{}.{}", netconf.name, container_id);
+    let handle_id = cni::wep::handle_id(&netconf.name, &container_id);
+    let host_veth = veth_name_for_workload(&ids.namespace, &ids.pod, "cali");
+    let wep_name = ids.workload_endpoint_name();
+
+    // "Lock then clock": serialize IPAM across concurrent CNI invocations on this
+    // host with an advisory file lock, held across the allocate/reuse decision and
+    // the WEP write. Best-effort — if the lock path is unavailable (e.g. a dev box
+    // without /var/lib/calico) we log and proceed; the datastore CAS still keeps
+    // allocation correct, we just lose the anti-thrash serialization.
+    let _host_lock =
+        match cni::lock::HostLock::acquire(std::path::Path::new(cni::lock::DEFAULT_LOCK_PATH)) {
+            Ok(g) => Some(g),
+            Err(e) => {
+                eprintln!("calico: proceeding without host IPAM lock: {e}");
+                None
+            }
+        };
 
     // Datastore + IPAM (own runtime, dropped before the netns work).
     let pod_ip: Ipv4Addr = {
@@ -153,26 +169,27 @@ fn cmd_add(netconf: &cni::NetConf) -> Result<String, String> {
                 ("pod".to_string(), ids.pod.clone()),
                 ("node".to_string(), node.clone()),
             ]);
-            let ipam = KddIpam::new(backend);
-            let ips = ipam
-                .auto_assign_from_pool_with_attrs(
-                    &node, pool_cidr, block_size, &handle_id, &secondary, 1,
-                )
-                .await
-                .map_err(|e| e.to_string())?;
-            let ip = ips
-                .into_iter()
-                .next()
-                .ok_or("no address available in pool")?;
-            match ip {
-                std::net::IpAddr::V4(v4) => Ok(v4),
-                std::net::IpAddr::V6(_) => Err("IPv6 CNI not yet supported".to_string()),
-            }
+            let ipam = KddIpam::new(backend.clone());
+            // Idempotent: reuse the handle's existing address on a re-ADD rather
+            // than leaking a fresh one.
+            let ip = cni::wep::allocate_or_reuse(
+                &ipam, &node, pool_cidr, block_size, &handle_id, &secondary,
+            )
+            .await?;
+
+            // Durable network identity: create/patch the WorkloadEndpoint CR with
+            // the CNI-owned fields (idempotent on re-ADD, never clobbers labels).
+            let spec = cni::wep::build_wep_spec(&ids, ip, &host_veth, &node);
+            cni::wep::write_wep(&backend, &ids.namespace, &wep_name, &spec).await?;
+            Ok(ip)
         })?
     };
 
+    // Allocation + datastore identity are committed; release the host lock before
+    // the (independent) netns wiring.
+    drop(_host_lock);
+
     // Netlink dataplane wiring (own runtime, inside cmd_add).
-    let host_veth = veth_name_for_workload(&ids.namespace, &ids.pod, "cali");
     let netns = File::open(&netns_path).map_err(|e| format!("open netns {netns_path}: {e}"))?;
     let add =
         cni::orchestrate::cmd_add(&host_veth, &ifname, netns.as_raw_fd(), pod_ip, netconf.mtu)?;
@@ -217,17 +234,20 @@ fn cmd_del(netconf: &cni::NetConf) -> Result<(), String> {
     let cni_args = env_or("CNI_ARGS", "");
     let node = node_name();
     let ids = identifiers_from_cni_args(&cni_args, &container_id, &node);
-    let handle_id = format!("{}.{}", netconf.name, container_id);
+    let handle_id = cni::wep::handle_id(&netconf.name, &container_id);
+    let wep_name = ids.workload_endpoint_name();
 
-    // Release the addresses (best-effort — DEL must be idempotent).
+    // Release the addresses and delete the WorkloadEndpoint CR (best-effort — DEL
+    // must be idempotent; both no-op if cleanup already happened).
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
     rt.block_on(async {
         if let Ok(backend) = connect_backend(netconf).await {
-            let ipam = KddIpam::new(backend);
+            let ipam = KddIpam::new(backend.clone());
             let _ = ipam.release_by_handle(&handle_id).await;
+            let _ = cni::wep::delete_wep(&backend, &ids.namespace, &wep_name).await;
         }
     });
 

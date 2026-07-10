@@ -80,7 +80,7 @@ pub fn cmd_add(
 
     // The host veth must answer ARP for the pod's gateway (and for return
     // traffic), so enable proxy_arp on it. Written after the interface exists.
-    set_proxy_arp(host_veth)?;
+    set_host_sysctls(host_veth)?;
 
     // Pod netns: rename, bring up, address, gateway + default route.
     setns(
@@ -102,6 +102,11 @@ pub fn cmd_add(
             set_mtu(&h, idx, m).await?;
         }
         set_up(&h, idx).await?;
+        // Container-side sysctls (upstream configureContainerSysctls, IPv4).
+        // Best-effort: a pod is not a router, so pod forwarding stays disabled.
+        for (path, value) in crate::sysctl::container_sysctls() {
+            let _ = std::fs::write(path, value.as_bytes());
+        }
         add_addr(&h, idx, std::net::IpAddr::V4(pod_ip), 32).await?;
         // Point-to-point gateway model: an on-link route to the link-local
         // gateway, then a default route via it. The host veth (proxy_arp)
@@ -122,11 +127,20 @@ pub fn cmd_add(
     })
 }
 
-/// Enable proxy_arp on the host-side veth so it answers ARP for the pod's
-/// point-to-point gateway (and any address the pod tries to reach on-link).
-fn set_proxy_arp(host_veth: &str) -> Result<(), String> {
-    let path = format!("/proc/sys/net/ipv4/conf/{host_veth}/proxy_arp");
-    std::fs::write(&path, b"1").map_err(|e| format!("enable proxy_arp ({path}): {e}"))
+/// Configure the host-side veth sysctls.
+///
+/// `proxy_arp=1` is required for the point-to-point gateway model (the host veth
+/// answers ARP for the pod's link-local gateway), so it is a hard error. The rest
+/// (`route_localnet`, `proxy_delay`, `forwarding`) mirror upstream's
+/// `configureSysctls` and are best-effort: some are unavailable in restricted
+/// (rootless) namespaces, and none is required for basic reachability.
+fn set_host_sysctls(host_veth: &str) -> Result<(), String> {
+    let proxy_arp = format!("/proc/sys/net/ipv4/conf/{host_veth}/proxy_arp");
+    std::fs::write(&proxy_arp, b"1").map_err(|e| format!("enable proxy_arp ({proxy_arp}): {e}"))?;
+    for (path, value) in crate::sysctl::host_veth_extra_sysctls(host_veth) {
+        let _ = std::fs::write(&path, value.as_bytes());
+    }
+    Ok(())
 }
 
 /// Tear down a pod's networking: delete the host veth end (removes the pair,
