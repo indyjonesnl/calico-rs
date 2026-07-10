@@ -44,7 +44,7 @@
 //! `on_update` only mutates in-memory desired state (cheap, no I/O); all kernel
 //! work happens in the async `complete_deferred_work`.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
@@ -95,6 +95,13 @@ pub trait SetProgrammer {
 struct SetState {
     kind: IpSetKind,
     tracker: SetDeltaTracker<String>,
+    /// Whether this set has ever been successfully created in the kernel (an
+    /// `add set` was actually applied for it). A set that only ever existed in
+    /// memory (e.g. created and removed again before the first
+    /// `complete_deferred_work`) must never be targeted by a kernel `delete
+    /// set` — nft would error deleting a set it never had, failing the whole
+    /// atomic batch and stalling the reconcile loop (T057 review finding 1).
+    programmed: bool,
 }
 
 impl SetState {
@@ -102,6 +109,7 @@ impl SetState {
         Self {
             kind,
             tracker: SetDeltaTracker::new(),
+            programmed: false,
         }
     }
 }
@@ -112,8 +120,18 @@ impl SetState {
 pub struct IpSetManager<P: SetProgrammer> {
     /// Desired sets keyed by IP-set id (BTree ⇒ deterministic programming order).
     sets: BTreeMap<IpSetId, SetState>,
-    /// Ids whose set must be deleted from the dataplane.
-    removed: BTreeSet<IpSetId>,
+    /// Sets removed from `sets` that still need a kernel `delete set` — i.e.
+    /// they were [`SetState::programmed`] at the time of removal. The whole
+    /// state (not just the id) is retained so that a subsequent `IpSetUpdate`/
+    /// `IpSetDeltaUpdate` for the same id before the delete is applied can
+    /// resurrect it *with its programmed dataplane membership intact*, so the
+    /// delta correctly deletes any members no longer desired (T057 review
+    /// finding 2) instead of starting from a fresh, empty dataplane view.
+    ///
+    /// Invariant: every entry here has `programmed == true` — a set that was
+    /// never programmed is dropped outright on removal (no entry, no kernel
+    /// op; see finding 1).
+    removed: BTreeMap<IpSetId, SetState>,
     programmer: P,
 }
 
@@ -122,7 +140,7 @@ impl<P: SetProgrammer> IpSetManager<P> {
     pub fn new(programmer: P) -> Self {
         Self {
             sets: BTreeMap::new(),
-            removed: BTreeSet::new(),
+            removed: BTreeMap::new(),
             programmer,
         }
     }
@@ -157,8 +175,11 @@ impl<P: SetProgrammer> IpSetManager<P> {
     }
 
     /// Build the batched nft document for the current delta, or `None` if there is
-    /// nothing to program. Does not mutate tracker state.
-    fn render_delta_doc(&self) -> Option<String> {
+    /// nothing to program. Does not mutate tracker state. Also returns the ids
+    /// that got an `add set` line this round (i.e. that are about to be
+    /// programmed into the kernel for the first time or re-touched), so the
+    /// caller can mark them [`SetState::programmed`] once the apply succeeds.
+    fn render_delta_doc(&self) -> Option<(String, Vec<IpSetId>)> {
         if self.pending_count() == 0 {
             return None;
         }
@@ -166,12 +187,14 @@ impl<P: SetProgrammer> IpSetManager<P> {
         // Ensure the shared table exists (`add` is idempotent — no flush).
         doc.push_str(&format!("add table {TABLE_FAMILY} {TABLE_NAME}\n"));
 
+        let mut touched = Vec::new();
         for (id, state) in &self.sets {
             let adds: Vec<&String> = state.tracker.iter_pending_additions().collect();
             let dels: Vec<&String> = state.tracker.iter_pending_removals().collect();
             if adds.is_empty() && dels.is_empty() {
                 continue;
             }
+            touched.push(id.clone());
             let name = set_name_for(id);
             // `add set` is idempotent: creates the set if absent, no-op if present.
             doc.push_str(&format!(
@@ -192,11 +215,14 @@ impl<P: SetProgrammer> IpSetManager<P> {
             }
         }
 
-        for id in &self.removed {
+        // Only sets that were actually programmed into the kernel are eligible
+        // to land here (see the `removed` field invariant) — a set dropped
+        // before it was ever created must never get a kernel `delete set`.
+        for id in self.removed.keys() {
             let name = set_name_for(id);
             doc.push_str(&format!("delete set {TABLE_FAMILY} {TABLE_NAME} {name}\n"));
         }
-        Some(doc)
+        Some((doc, touched))
     }
 }
 
@@ -221,8 +247,15 @@ impl<P: SetProgrammer> Manager for IpSetManager<P> {
     fn on_update(&mut self, msg: &ToDataplane) {
         match msg {
             ToDataplane::IpSetUpdate(IpSetUpdate { id, kind, members }) => {
-                // A (re)definition cancels any pending removal.
-                self.removed.remove(id);
+                // A (re)definition cancels any pending removal. If the removed
+                // set was still awaiting its kernel `delete set`, resurrect its
+                // SetState (tracker and all) rather than starting fresh, so its
+                // programmed dataplane membership isn't forgotten — otherwise a
+                // later delta would fail to clean up members that are still
+                // programmed in the kernel but no longer desired.
+                if let Some(resurrected) = self.removed.remove(id) {
+                    self.sets.insert(id.clone(), resurrected);
+                }
                 let state = self
                     .sets
                     .entry(id.clone())
@@ -235,7 +268,9 @@ impl<P: SetProgrammer> Manager for IpSetManager<P> {
                 added_members,
                 removed_members,
             }) => {
-                self.removed.remove(id);
+                if let Some(resurrected) = self.removed.remove(id) {
+                    self.sets.insert(id.clone(), resurrected);
+                }
                 // A delta before the full definition is unexpected; default the
                 // kind to `Ip` so we don't drop the update.
                 let state = self
@@ -249,17 +284,25 @@ impl<P: SetProgrammer> Manager for IpSetManager<P> {
                     state.tracker.remove_desired(m);
                 }
             }
-            // Drop desired state; schedule the kernel set for deletion. A remove
-            // for an id we never tracked is a no-op (nothing to delete).
-            ToDataplane::IpSetRemove(id) if self.sets.remove(id).is_some() => {
-                self.removed.insert(id.clone());
+            // Drop desired state. A set that was never programmed into the
+            // kernel is simply dropped — there is nothing to delete, and
+            // emitting a kernel `delete set` for it would make nft error on a
+            // set that never existed, failing the whole atomic batch and
+            // stalling the reconcile loop. Only a set that WAS programmed is
+            // retained (in `removed`) so its kernel counterpart gets deleted.
+            ToDataplane::IpSetRemove(id) => {
+                if let Some(state) = self.sets.remove(id) {
+                    if state.programmed {
+                        self.removed.insert(id.clone(), state);
+                    }
+                }
             }
             _ => {}
         }
     }
 
     async fn complete_deferred_work(&mut self) -> Result<(), DataplaneError> {
-        let Some(doc) = self.render_delta_doc() else {
+        let Some((doc, touched)) = self.render_delta_doc() else {
             return Ok(()); // Fully in sync — program nothing (idempotent).
         };
 
@@ -270,7 +313,15 @@ impl<P: SetProgrammer> Manager for IpSetManager<P> {
             .await
             .map_err(DataplaneError::new)?;
 
-        // Commit: programmed == desired for every touched set; drop deleted sets.
+        // Commit: mark every set actually touched this round (i.e. that got an
+        // `add set` line) as programmed, so a later removal knows a kernel
+        // `delete set` is required.
+        for id in &touched {
+            if let Some(state) = self.sets.get_mut(id) {
+                state.programmed = true;
+            }
+        }
+        // dataplane == desired for every set; drop the now-deleted sets.
         for state in self.sets.values_mut() {
             state.tracker.mark_in_sync();
         }
@@ -472,6 +523,81 @@ mod tests {
         assert!(spy
             .last()
             .contains(&format!("delete set {TABLE_FAMILY} {TABLE_NAME} {name}")));
+        assert_eq!(mgr.pending_count(), 0);
+    }
+
+    /// T057 review finding 1: a set that is created and removed again before it
+    /// was ever programmed into the kernel must be dropped silently — no kernel
+    /// `delete set` may be emitted (nft would error deleting a set it never
+    /// created, failing the whole atomic batch and stalling the reconcile loop
+    /// forever).
+    #[tokio::test]
+    async fn remove_before_first_apply_drops_silently_no_delete_set() {
+        let spy = SpyProgrammer::default();
+        let mut mgr = IpSetManager::new(spy.clone());
+
+        // IpSetUpdate then IpSetRemove for the same id, both before any
+        // complete_deferred_work — the set never touched the kernel.
+        mgr.on_update(&update("s1", IpSetKind::Ip, &["10.0.0.1"]));
+        mgr.on_update(&ToDataplane::IpSetRemove("s1".into()));
+
+        assert_eq!(mgr.desired_len(), 0, "set gone from memory");
+        assert_eq!(
+            mgr.pending_count(),
+            0,
+            "a never-programmed set needs no kernel op at all"
+        );
+
+        mgr.complete_deferred_work().await.unwrap();
+        assert!(
+            spy.docs().iter().all(|d| !d.contains("delete set")),
+            "no delete set for a set that was never created in the kernel"
+        );
+        assert!(spy.docs().is_empty(), "nothing to program at all");
+    }
+
+    /// T057 review finding 2: removing a *programmed* set and immediately
+    /// re-adding it (with a smaller membership) before the next apply must not
+    /// lose the kernel's previously-programmed membership — the delta must
+    /// still delete the now-stale members instead of leaving them behind.
+    #[tokio::test]
+    async fn remove_then_readd_before_apply_deletes_stale_members() {
+        let spy = SpyProgrammer::default();
+        let mut mgr = IpSetManager::new(spy.clone());
+
+        // Program s1 with two members so it is actually created in the kernel.
+        mgr.on_update(&update("s1", IpSetKind::Ip, &["10.0.0.1", "10.0.0.2"]));
+        mgr.complete_deferred_work().await.unwrap();
+        spy.clear();
+
+        // Remove, then immediately re-add with a smaller membership — both
+        // before the next complete_deferred_work.
+        mgr.on_update(&ToDataplane::IpSetRemove("s1".into()));
+        mgr.on_update(&update("s1", IpSetKind::Ip, &["10.0.0.1"]));
+
+        // The resurrected tracker must retain its programmed dataplane
+        // knowledge: .1 is already there (no re-add needed), .2 is stale and
+        // must be scheduled for deletion.
+        assert_eq!(mgr.pending_additions("s1"), Some(0));
+        assert_eq!(
+            mgr.pending_removals("s1"),
+            Some(1),
+            ".2 must be deleted as stale"
+        );
+
+        mgr.complete_deferred_work().await.unwrap();
+        let doc = spy.last();
+        let name = set_name_for("s1");
+        assert!(
+            doc.contains(&format!(
+                "delete element {TABLE_FAMILY} {TABLE_NAME} {name} {{ 10.0.0.2 }}"
+            )),
+            "stale member .2 must be deleted, doc: {doc}"
+        );
+        assert!(
+            !doc.contains("delete set"),
+            "the resurrected set must not be dropped from the kernel, doc: {doc}"
+        );
         assert_eq!(mgr.pending_count(), 0);
     }
 
