@@ -79,7 +79,7 @@ impl PolicyRule {
 }
 
 /// Identifier of a policy within a tier.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct PolicyId {
     pub tier: String,
     pub name: String,
@@ -112,7 +112,7 @@ pub struct WorkloadEndpoint {
 }
 
 /// Identifier of a workload endpoint.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct WorkloadEndpointId {
     pub orchestrator: String,
     pub workload: String,

@@ -155,6 +155,21 @@ pub struct NftChain {
 }
 
 impl NftChain {
+    /// The base-chain declaration body (`type … hook … priority …; policy …;`) for
+    /// an `add chain` statement, or `None` for a regular chain.
+    fn base_decl(&self) -> Option<String> {
+        self.base.as_ref().map(|b| {
+            let pol = if b.policy_accept { "accept" } else { "drop" };
+            format!(
+                "type {} hook {} priority {}; policy {};",
+                b.chain_type.render(),
+                b.hook,
+                b.priority,
+                pol
+            )
+        })
+    }
+
     pub fn regular(name: impl Into<String>, rules: Vec<NftRule>) -> Self {
         Self {
             name: name.into(),
@@ -240,6 +255,66 @@ impl NftTable {
     pub fn apply(&self) -> Result<(), String> {
         apply_ruleset(&self.render())
     }
+}
+
+/// Render a **non-destructive** per-chain update document for `nft -f -`.
+///
+/// This is the apply path for managers (policy/endpoint chains) that share the
+/// `inet calico` table with the [`crate::ipset_manager`]'s named sets. It NEVER
+/// flushes the table or the ruleset — doing so would wipe those sets (which are
+/// table-scoped). Instead each desired chain is flushed and re-filled in place,
+/// and no-longer-desired chains are deleted, leaving sets and untouched chains
+/// intact.
+///
+/// The statement order is chosen so a single atomic `nft -f -` transaction always
+/// applies cleanly:
+/// 1. `add table` (idempotent — no flush).
+/// 2. `add chain` for every desired chain (idempotent; base chains carry their
+///    hook decl) — so every `jump`/`goto` target exists before any rule is added.
+/// 3. `flush chain` for every desired chain (clear stale rules) and for every
+///    chain about to be deleted (so it is empty and unreferenced).
+/// 4. `add rule` for every desired chain's rules (all jump targets now resolve).
+/// 5. `delete chain` for no-longer-desired chains (now empty and unreferenced).
+pub fn render_chain_updates(
+    family: &str,
+    table: &str,
+    chains: &[NftChain],
+    deletions: &[String],
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("add table {family} {table}\n"));
+    // 2. Ensure every desired chain exists (create-if-absent; idempotent).
+    for c in chains {
+        match c.base_decl() {
+            Some(decl) => out.push_str(&format!(
+                "add chain {family} {table} {} {{ {decl} }}\n",
+                c.name
+            )),
+            None => out.push_str(&format!("add chain {family} {table} {}\n", c.name)),
+        }
+    }
+    // 3. Flush desired chains, then chains to be removed.
+    for c in chains {
+        out.push_str(&format!("flush chain {family} {table} {}\n", c.name));
+    }
+    for name in deletions {
+        out.push_str(&format!("flush chain {family} {table} {name}\n"));
+    }
+    // 4. Re-add rules for desired chains.
+    for c in chains {
+        for r in &c.rules {
+            out.push_str(&format!(
+                "add rule {family} {table} {} {}\n",
+                c.name,
+                r.render()
+            ));
+        }
+    }
+    // 5. Delete no-longer-desired chains (empty + unreferenced by now).
+    for name in deletions {
+        out.push_str(&format!("delete chain {family} {table} {name}\n"));
+    }
+    out
 }
 
 /// Feed a ruleset document to `nft -f -`.
@@ -335,6 +410,74 @@ mod tests {
         assert!(doc.contains("type filter hook input priority 0; policy accept;"));
         assert!(doc.contains("th dport 443 ip saddr 10.0.0.0/24 accept comment \"allow-web\""));
         assert!(doc.trim_end().ends_with('}'));
+    }
+
+    #[test]
+    fn chain_updates_are_non_destructive_and_ordered() {
+        // A base chain that jumps to a regular chain which references a named set.
+        let base = NftChain::base(
+            "cali-forward",
+            BaseHook {
+                chain_type: ChainType::Filter,
+                hook: "forward".into(),
+                priority: 0,
+                policy_accept: true,
+            },
+            vec![NftRule::new(Verdict::Jump("cali-tw-cali123".into()))
+                .with(NftMatch::OutInterface("cali123".into()))],
+        );
+        let tw = NftChain::regular(
+            "cali-tw-cali123",
+            vec![
+                NftRule::new(Verdict::Jump("cali-pi-default-allow".into())),
+                NftRule::new(Verdict::Drop).comment("default deny"),
+            ],
+        );
+        let pol = NftChain::regular(
+            "cali-pi-default-allow",
+            vec![NftRule::new(Verdict::Accept).with(NftMatch::SrcSet("cali40abc".into()))],
+        );
+        let doc = render_chain_updates(
+            "inet",
+            "calico",
+            &[base, tw, pol],
+            &["cali-pi-default-stale".to_string()],
+        );
+
+        // NEVER flush the table or the whole ruleset (that would wipe the sets).
+        assert!(!doc.contains("flush table"), "must not flush the table");
+        assert!(!doc.contains("flush ruleset"), "must not flush the ruleset");
+        // Idempotent table creation, per-chain flush + re-add.
+        assert!(doc.contains("add table inet calico"));
+        assert!(doc.contains(
+            "add chain inet calico cali-forward { type filter hook forward priority 0; policy accept; }"
+        ));
+        assert!(doc.contains("add chain inet calico cali-tw-cali123"));
+        assert!(doc.contains("flush chain inet calico cali-tw-cali123"));
+        assert!(doc.contains("add rule inet calico cali-tw-cali123 jump cali-pi-default-allow"));
+        assert!(
+            doc.contains("add rule inet calico cali-pi-default-allow ip saddr @cali40abc accept")
+        );
+        assert!(doc.contains(
+            "add rule inet calico cali-forward oifname \"cali123\" jump cali-tw-cali123"
+        ));
+        // Stale chain flushed then deleted (no table wipe).
+        assert!(doc.contains("flush chain inet calico cali-pi-default-stale"));
+        assert!(doc.contains("delete chain inet calico cali-pi-default-stale"));
+
+        // Ordering: every `add chain` precedes every `add rule` (so jumps resolve),
+        // and `delete chain` comes last (after the referencing rules are gone).
+        let first_add_rule = doc.find("add rule").unwrap();
+        let last_add_chain = doc.rfind("add chain").unwrap();
+        assert!(
+            last_add_chain < first_add_rule,
+            "all chains created before rules"
+        );
+        let delete_pos = doc.find("delete chain").unwrap();
+        assert!(
+            delete_pos > first_add_rule,
+            "chains deleted after rules re-added"
+        );
     }
 
     #[test]

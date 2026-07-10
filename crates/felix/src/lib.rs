@@ -7,6 +7,7 @@
 
 pub mod config;
 pub mod dataplane;
+pub mod endpoint_manager;
 pub mod ipset_manager;
 pub mod nat;
 pub mod nft;
