@@ -42,8 +42,8 @@
 //!
 //! - [`ResolvedPolicy`] → `proto::Policy`: each [`ResolvedRule`] maps to a
 //!   `proto::PolicyRule` — `action` → `RuleAction`, peer selector ids →
-//!   `src/dst_ip_set_ids`, CIDRs → `src/dst_nets`, ports → `dst_ports`. (Calc's
-//!   resolved rule carries no `src_ports`/`rule_id`, so those stay empty/None.)
+//!   `src/dst_ip_set_ids`, CIDRs → `src/dst_nets`, ports → `src/dst_ports`.
+//!   (Calc's resolved rule carries no `rule_id`, so that stays `None`.)
 //! - [`EndpointPolicyOrder`] → `proto::WorkloadEndpoint`: `endpoint_id` → `name`,
 //!   tiers passthrough; `profile_ids` and `ipv4_nets`/`ipv6_nets` from the
 //!   graph's local-endpoint detail (nets split on `':'` → v6 else v4).
@@ -306,7 +306,7 @@ fn convert_rule(r: &ResolvedRule) -> PolicyRule {
         protocol: r.protocol.clone(),
         src_nets: r.src_nets.clone(),
         dst_nets: r.dst_nets.clone(),
-        src_ports: Vec::new(),
+        src_ports: r.src_ports.clone(),
         dst_ports: r.dst_ports.clone(),
         src_ip_set_ids: r.src_ip_set_ids.clone(),
         dst_ip_set_ids: r.dst_ip_set_ids.clone(),
@@ -584,6 +584,96 @@ mod tests {
         assert!(deltas[0].removed_members.is_empty());
     }
 
+    /// FINDING 2(a) regression: a member added then removed from the SAME
+    /// already-active IP set within one flush batch must net-zero out —
+    /// no `IpSetDeltaUpdate` at all for that set (not an empty one), since
+    /// the dataplane never needs to hear about a member that came and went
+    /// entirely within the batch.
+    #[test]
+    fn member_added_then_removed_in_same_batch_cancels_to_no_delta() {
+        let mut g = CalcGraph::new("node-a");
+        let mut seq = EventSequencer::new();
+        seq.ingest(&g.on_update(policy("np1", np(DB_FROM_WEB))).unwrap(), &g);
+        seq.ingest(
+            &g.on_update(wep("db", "node-a", &[("role", "db")], &["10.0.0.9"]))
+                .unwrap(),
+            &g,
+        );
+        // First flush activates the peer IP set (empty) as an initial update.
+        let mut sink = RecordingSink::default();
+        seq.flush_into(&mut sink).unwrap();
+
+        // Within the SAME batch: a web endpoint joins (member add), then
+        // leaves again (member remove) before the next flush.
+        seq.ingest(
+            &g.on_update(wep("web1", "node-a", &[("role", "web")], &["10.0.0.5"]))
+                .unwrap(),
+            &g,
+        );
+        seq.ingest(&g.on_update(remove_wep("web1")).unwrap(), &g);
+
+        let mut sink = RecordingSink::default();
+        seq.flush_into(&mut sink).unwrap();
+
+        let peer = peer_id("role == 'web'");
+        let deltas: Vec<&IpSetDeltaUpdate> = sink
+            .seen
+            .iter()
+            .filter_map(|m| match m {
+                ToDataplane::IpSetDeltaUpdate(d) if d.id == peer => Some(d),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            deltas.is_empty(),
+            "a member added then removed within the same batch must not \
+             produce any IpSetDeltaUpdate for that set, got {deltas:?}"
+        );
+    }
+
+    /// FINDING 2(b) regression: an IP set that becomes active then inactive
+    /// within the SAME flush batch (before the dataplane ever sees it) must
+    /// net-zero out — neither an `IpSetUpdate` nor an `IpSetRemove` is
+    /// emitted for it.
+    #[test]
+    fn ip_set_active_then_inactive_in_same_batch_emits_neither_update_nor_remove() {
+        let mut g = CalcGraph::new("node-a");
+        let mut seq = EventSequencer::new();
+        seq.ingest(&g.on_update(policy("np1", np(DB_FROM_WEB))).unwrap(), &g);
+
+        // Within the SAME batch: the applies-to endpoint arrives (activating
+        // np1, which registers the "role == 'web'" peer IP set), then leaves
+        // again (deactivating np1, which unregisters it) — all before the
+        // first flush ever sees either state.
+        seq.ingest(
+            &g.on_update(wep("db", "node-a", &[("role", "db")], &["10.0.0.9"]))
+                .unwrap(),
+            &g,
+        );
+        seq.ingest(&g.on_update(remove_wep("db")).unwrap(), &g);
+
+        let mut sink = RecordingSink::default();
+        seq.flush_into(&mut sink).unwrap();
+
+        let peer = peer_id("role == 'web'");
+        assert!(
+            !sink
+                .seen
+                .iter()
+                .any(|m| matches!(m, ToDataplane::IpSetUpdate(u) if u.id == peer)),
+            "an IP set that activated and deactivated within the same batch \
+             must never be flushed as an IpSetUpdate"
+        );
+        assert!(
+            !sink
+                .seen
+                .iter()
+                .any(|m| matches!(m, ToDataplane::IpSetRemove(id) if *id == peer)),
+            "an IP set never seen by the dataplane must not be flushed as an \
+             IpSetRemove either"
+        );
+    }
+
     /// Two policy updates in one batch collapse to a single ActivePolicyUpdate
     /// (last state wins).
     #[test]
@@ -656,6 +746,41 @@ mod tests {
         assert_eq!(r.protocol.as_deref(), Some("TCP"));
         assert_eq!(r.src_ip_set_ids, vec![peer_id("role == 'web'")]);
         assert_eq!(r.src_nets, vec!["192.168.0.0/16".to_string()]);
+        assert_eq!(r.dst_ports, vec![443]);
+    }
+
+    /// FINDING 1 regression: a rule constraining SOURCE ports must produce a
+    /// wire PolicyRule with the matching src_ports (previously always
+    /// empty, i.e. dropped -> under-enforcement), while dst_ports is
+    /// unaffected.
+    #[test]
+    fn resolved_rule_carries_source_ports_to_policy_rule() {
+        let mut g = CalcGraph::new("node-a");
+        let mut seq = EventSequencer::new();
+        let spec = np(r#"{"selector":"role == 'db'","types":["Ingress"],
+            "ingress":[{"action":"Allow",
+                "source":{"ports":[1024,2048]},
+                "destination":{"ports":[443]}}]}"#);
+        seq.ingest(&g.on_update(policy("np1", spec)).unwrap(), &g);
+        seq.ingest(
+            &g.on_update(wep("db", "node-a", &[("role", "db")], &["10.0.0.9"]))
+                .unwrap(),
+            &g,
+        );
+
+        let mut sink = RecordingSink::default();
+        seq.flush_into(&mut sink).unwrap();
+
+        let policy = sink
+            .seen
+            .iter()
+            .find_map(|m| match m {
+                ToDataplane::ActivePolicyUpdate { policy, .. } => Some(policy),
+                _ => None,
+            })
+            .expect("policy update");
+        let r = &policy.inbound_rules[0];
+        assert_eq!(r.src_ports, vec![1024, 2048]);
         assert_eq!(r.dst_ports, vec![443]);
     }
 

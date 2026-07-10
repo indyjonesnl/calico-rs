@@ -134,6 +134,8 @@ pub struct ScanRule {
     pub src_nets: Vec<String>,
     /// Destination CIDRs (pass-through).
     pub dst_nets: Vec<String>,
+    /// Source ports (pass-through).
+    pub src_ports: Vec<u16>,
     /// Destination ports (pass-through).
     pub dst_ports: Vec<u16>,
 }
@@ -357,6 +359,8 @@ pub struct ResolvedRule {
     pub src_nets: Vec<String>,
     /// Destination CIDRs (pass-through).
     pub dst_nets: Vec<String>,
+    /// Source ports (pass-through).
+    pub src_ports: Vec<u16>,
     /// Destination ports (pass-through).
     pub dst_ports: Vec<u16>,
 }
@@ -563,6 +567,7 @@ impl RuleScanner {
             dst_ip_set_ids: rule.dst_selector.iter().map(ip_set_id).collect(),
             src_nets: rule.src_nets.clone(),
             dst_nets: rule.dst_nets.clone(),
+            src_ports: rule.src_ports.clone(),
             dst_ports: rule.dst_ports.clone(),
         }
     }
@@ -626,6 +631,7 @@ fn scan_rules(rules: &[Rule]) -> Result<Vec<ScanRule>, SelectorError> {
                 dst_selector: combine_peer_selector(&r.destination)?,
                 src_nets: r.source.nets.clone(),
                 dst_nets: r.destination.nets.clone(),
+                src_ports: r.source.ports.clone(),
                 dst_ports: r.destination.ports.clone(),
             })
         })
@@ -840,6 +846,7 @@ mod tests {
                 dst_selector: None,
                 src_nets: vec![],
                 dst_nets: vec![],
+                src_ports: vec![],
                 dst_ports: vec![],
             }],
             outbound: vec![],
@@ -900,6 +907,7 @@ mod tests {
                 dst_selector: None,
                 src_nets: vec!["10.0.0.0/8".into()],
                 dst_nets: vec![],
+                src_ports: vec![],
                 dst_ports: vec![],
             }],
             outbound: vec![],
@@ -910,6 +918,35 @@ mod tests {
         let resolved = r.resolved.unwrap();
         assert!(resolved.inbound[0].src_ip_set_ids.is_empty());
         assert_eq!(resolved.inbound[0].src_nets, vec!["10.0.0.0/8".to_string()]);
+    }
+
+    /// FINDING 1 regression: a rule constraining SOURCE ports must carry
+    /// them through scan_rules -> ScanRule -> ResolvedRule (and NOT be
+    /// dropped), exactly like destination ports. Under-enforcement bug: the
+    /// dataplane must see src_ports on the resolved rule so it can restrict
+    /// on source port, not just destination port.
+    #[test]
+    fn source_ports_flow_through_to_resolved_rule() {
+        let s = spec(
+            r#"{"selector":"all()","types":["Ingress"],
+                "ingress":[{"action":"Allow",
+                    "source":{"ports":[1024,2048]},
+                    "destination":{"ports":[443]}}]}"#,
+        );
+        let rules = PolicyRules {
+            inbound: scan_rules(&s.ingress).unwrap(),
+            outbound: vec![],
+        };
+        // Captured on the scan-ready rule.
+        assert_eq!(rules.inbound[0].src_ports, vec![1024, 2048]);
+        assert_eq!(rules.inbound[0].dst_ports, vec![443]);
+
+        // And carried through the scanner into the resolved rule.
+        let mut rs = RuleScanner::new();
+        let r = rs.on_policy_active("p1", &rules);
+        let resolved = r.resolved.unwrap();
+        assert_eq!(resolved.inbound[0].src_ports, vec![1024, 2048]);
+        assert_eq!(resolved.inbound[0].dst_ports, vec![443]);
     }
 
     #[test]
