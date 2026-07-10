@@ -13,7 +13,7 @@ pub mod result;
 pub mod sysctl;
 pub mod wep;
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub mod lock;
 
 #[cfg(target_os = "linux")]

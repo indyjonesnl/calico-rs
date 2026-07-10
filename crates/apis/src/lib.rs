@@ -39,8 +39,8 @@ pub use ipam::{
 };
 pub use networking::{
     AllowedUse, AssignmentMode, EncapMode, GlobalNetworkSet, GlobalNetworkSetSpec, HostEndpoint,
-    HostEndpointSpec, IPPool, IpPoolSpec, NetworkSet, NetworkSetSpec, WorkloadEndpointSpec,
-    WorkloadPort,
+    HostEndpointSpec, IPPool, IpPoolSpec, NetworkSet, NetworkSetSpec, WorkloadEndpoint,
+    WorkloadEndpointSpec, WorkloadPort,
 };
 pub use node::{Node, NodeBgpSpec, NodeSpec, OrchRef};
 pub use policy::{

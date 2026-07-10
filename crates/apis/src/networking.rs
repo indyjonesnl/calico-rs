@@ -85,15 +85,25 @@ impl Default for IpPoolSpec {
 }
 
 /// A named port exposed by a workload.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkloadPort {
     pub name: String,
     pub port: u16,
     pub protocol: String,
 }
 
-/// Spec for the `WorkloadEndpoint` resource — a pod's network presence.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Spec for the namespaced `WorkloadEndpoint` resource — a pod's network presence.
+#[derive(
+    CustomResource, Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema,
+)]
+#[kube(
+    group = "crd.projectcalico.org",
+    version = "v1",
+    kind = "WorkloadEndpoint",
+    plural = "workloadendpoints",
+    singular = "workloadendpoint",
+    namespaced
+)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkloadEndpointSpec {
     pub node: String,

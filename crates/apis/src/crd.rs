@@ -13,6 +13,7 @@ pub fn crd_yaml() -> String {
     // Extend this list as more `CustomResource` types are added (T013 rollout).
     let docs = [
         crate::IPPool::crd(),
+        crate::WorkloadEndpoint::crd(),
         crate::NetworkPolicy::crd(),
         crate::GlobalNetworkPolicy::crd(),
         crate::Tier::crd(),
@@ -63,6 +64,7 @@ mod tests {
 
     #[test]
     fn namespaced_and_cluster_scopes() {
+        assert_eq!(crate::WorkloadEndpoint::crd().spec.scope, "Namespaced");
         assert_eq!(crate::NetworkPolicy::crd().spec.scope, "Namespaced");
         assert_eq!(crate::GlobalNetworkPolicy::crd().spec.scope, "Cluster");
         assert_eq!(crate::ClusterInformation::crd().spec.scope, "Cluster");
@@ -88,6 +90,7 @@ mod tests {
         let yaml = crd_yaml();
         assert!(yaml.contains("kind: CustomResourceDefinition"));
         assert!(yaml.contains("name: ippools.crd.projectcalico.org"));
+        assert!(yaml.contains("name: workloadendpoints.crd.projectcalico.org"));
         assert!(yaml.contains("name: networkpolicies.crd.projectcalico.org"));
         assert!(yaml.contains("name: globalnetworkpolicies.crd.projectcalico.org"));
         // The generated OpenAPI schema carries our camelCase spec fields.
