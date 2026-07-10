@@ -49,6 +49,7 @@ rules:
       - workloadendpoints
       - profiles
       - tiers
+      - nodes
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Native Kubernetes NetworkPolicy (translated by calc).
   - apiGroups: ["networking.k8s.io"]
