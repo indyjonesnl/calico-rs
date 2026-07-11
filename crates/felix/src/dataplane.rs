@@ -175,10 +175,20 @@ impl DataplaneState {
         self.force = true;
     }
 
-    /// Whether an apply round should run at `now` (dirty, and either forced or the
-    /// throttle interval has elapsed).
+    /// Whether an apply round should run at `now`: dirty, the datastore has
+    /// reached its first `InSync`, and either forced or the throttle interval has
+    /// elapsed.
+    ///
+    /// The `datastore_in_sync` gate is the felix invariant that keeps the dataplane
+    /// STABLE across churn: managers render the WHOLE table from their desired
+    /// state and atomically replace the kernel's copy, so programming a mid-resync
+    /// snapshot would replace a prior good table with an INCOMPLETE one (partial /
+    /// empty table until the resync finishes). Deferring the first apply to `InSync`
+    /// lets the (cheap) `on_update` calls accumulate the entire snapshot, then
+    /// programs one COMPLETE table in a single atomic apply. Live updates after the
+    /// first `InSync` continue to apply normally (`datastore_in_sync` latches).
     pub fn should_apply(&self, now: u64) -> bool {
-        self.dirty && (self.force || now >= self.next_eligible)
+        self.dirty && self.datastore_in_sync && (self.force || now >= self.next_eligible)
     }
 
     /// Whether an apply round is owed (independent of the throttle).
@@ -471,6 +481,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn no_apply_until_datastore_in_sync() {
+        // Snapshot items stream in one-at-a-time during the initial resync (before
+        // InSync). Programming any of them would render the WHOLE table from an
+        // INCOMPLETE snapshot and atomically replace the kernel's (prior, good)
+        // table — the partial/empty-table-after-churn bug. The dataplane MUST defer
+        // its first apply until InSync, then apply the COMPLETE state exactly once.
+        let mut dp = InternalDataplane::with_throttle(1);
+        let (m, h) = MockManager::new(accept_all);
+        dp.add_manager(Box::new(m));
+
+        // Resync snapshot arrives incrementally; NO apply is owed yet.
+        dp.dispatch(&ipset_msg("s1"));
+        dp.dispatch(&ipset_msg("s2"));
+        assert!(
+            !dp.should_apply(0),
+            "must NOT program a partial snapshot before InSync"
+        );
+        assert_eq!(h.borrow().apply_calls, 0, "no kernel apply before InSync");
+        assert_eq!(
+            h.borrow().seen.len(),
+            2,
+            "but on_update still absorbs state"
+        );
+
+        // InSync releases exactly one coalesced apply over the COMPLETE state.
+        dp.dispatch(&ToDataplane::InSync);
+        assert!(dp.should_apply(0), "InSync releases the first apply");
+        dp.apply_all(0).await;
+        assert_eq!(
+            h.borrow().apply_calls,
+            1,
+            "exactly one full apply once in-sync"
+        );
+    }
+
+    #[tokio::test]
     async fn burst_coalesces_to_single_apply() {
         let mut dp = InternalDataplane::with_throttle(1);
         let (m, h) = MockManager::new(accept_all);
@@ -482,7 +528,8 @@ mod tests {
         }
         assert!(h.borrow().seen.len() == 5, "on_update runs per message");
 
-        // One apply round at tick 0.
+        // One coalesced apply round once InSync releases programming (tick 0).
+        dp.dispatch(&ToDataplane::InSync);
         assert!(dp.should_apply(0));
         dp.apply_all(0).await;
 
@@ -541,6 +588,7 @@ mod tests {
         dp.add_manager(Box::new(m));
 
         dp.dispatch(&route_msg("10.0.0.0/24"));
+        dp.dispatch(&ToDataplane::InSync); // release programming (gate: in-sync)
 
         // First round: manager fails.
         assert!(dp.should_apply(0));
@@ -550,7 +598,11 @@ mod tests {
             dp.needs_apply(),
             "failed apply stays dirty (state not lost)"
         );
-        assert_eq!(h.borrow().seen.len(), 1, "absorbed state is retained");
+        assert_eq!(
+            h.borrow().seen.len(),
+            2,
+            "absorbed state is retained (route + InSync)"
+        );
 
         // Retry on a later tick: manager now succeeds.
         assert!(dp.should_apply(5), "retry is scheduled after backoff");
