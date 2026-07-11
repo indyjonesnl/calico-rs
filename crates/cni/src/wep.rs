@@ -214,6 +214,84 @@ pub async fn delete_wep(backend: &KddBackend, namespace: &str, name: &str) -> Re
     }
 }
 
+/// The result of an ownership-checked CNI DEL ([`delete_wep_if_owned`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DelOutcome {
+    /// This container owned the WEP (or it was already gone / carries no owner id):
+    /// the WEP was removed and the caller SHOULD proceed to tear down the veth.
+    Deleted,
+    /// A **different** container owns the WEP under this (deterministic, pod-name
+    /// based) endpoint name — a newer sandbox recreated the same-named pod. The WEP
+    /// was left intact and the caller MUST NOT tear down the shared-name veth, which
+    /// now belongs to the live pod.
+    OwnedByOther,
+}
+
+/// Whether a CNI DEL carrying `cni_container_id` must be treated as a NO-OP
+/// because the stored WEP's `stored_container_id` belongs to a different sandbox
+/// (a newer same-named pod). The guard trips only when BOTH ids are non-empty and
+/// differ: an empty stored id (legacy WEP with no owner recorded) or an empty CNI
+/// id (best-effort teardown with no `CNI_CONTAINERID`) falls through to a plain
+/// delete, preserving idempotent normal DEL.
+fn del_owned_by_other(stored_container_id: &str, cni_container_id: &str) -> bool {
+    !cni_container_id.is_empty()
+        && !stored_container_id.is_empty()
+        && stored_container_id != cni_container_id
+}
+
+/// Delete the WEP **only if it belongs to `container_id`** — upstream Calico's DEL
+/// container-ID guard (`k8s.CmdDelK8s` / `utils.CleanUpNamespace`).
+///
+/// The WEP name and the host veth name are deterministic from `(node, namespace,
+/// pod, endpoint)`, NOT the sandbox — so when a pod is deleted and quickly
+/// recreated under the same name, kubelet's periodic dead-sandbox GC later fires a
+/// CNI DEL for the OLD sandbox carrying the OLD `CNI_CONTAINERID`. Deleting by name
+/// then clobbers the recreated pod's WEP and its identically-named veth, isolating a
+/// running pod (observed live: felix then renders an empty policy table). Guarding on
+/// the stored `spec.containerID` makes the stale DEL a no-op.
+///
+/// The guard only trips when BOTH ids are non-empty and differ; a WEP with no stored
+/// id (legacy) or a DEL with no `CNI_CONTAINERID` falls through to the plain delete,
+/// preserving idempotent best-effort teardown.
+pub async fn delete_wep_if_owned(
+    backend: &KddBackend,
+    namespace: &str,
+    name: &str,
+    container_id: &str,
+) -> Result<DelOutcome, String> {
+    let kv = match backend
+        .get(ResourceKind::WorkloadEndpoint, Some(namespace), name)
+        .await
+    {
+        Ok(Some(kv)) => kv,
+        // Already gone: nothing owns the name, so normal teardown may proceed.
+        Ok(None) | Err(datastore::CasError::NotFound) => return Ok(DelOutcome::Deleted),
+        Err(e) => return Err(e.to_string()),
+    };
+
+    let owner = kv
+        .spec
+        .get("containerID")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if del_owned_by_other(owner, container_id) {
+        return Ok(DelOutcome::OwnedByOther);
+    }
+
+    match backend
+        .delete(
+            ResourceKind::WorkloadEndpoint,
+            Some(namespace),
+            name,
+            &kv.raw_revision,
+        )
+        .await
+    {
+        Ok(()) | Err(datastore::CasError::NotFound) => Ok(DelOutcome::Deleted),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,6 +388,28 @@ mod tests {
         let long_sa = "a".repeat(63);
         let labels = build_wep_labels(&BTreeMap::new(), "nettest", Some(&long_sa));
         assert!(!labels.contains_key("projectcalico.org/serviceaccount"));
+    }
+
+    #[test]
+    fn del_guard_skips_when_a_different_container_owns_the_wep() {
+        // Stale DEL from dead-sandbox GC (old container id) for a pod recreated
+        // under the same name (WEP now carries the new container id) → NO-OP.
+        assert!(del_owned_by_other("new-sandbox", "old-sandbox"));
+    }
+
+    #[test]
+    fn del_guard_deletes_when_container_matches() {
+        // The normal single DEL: the WEP is owned by this very container.
+        assert!(!del_owned_by_other("sandbox-1", "sandbox-1"));
+    }
+
+    #[test]
+    fn del_guard_falls_through_when_an_id_is_missing() {
+        // Legacy WEP without a stored owner, or a DEL with no CNI_CONTAINERID:
+        // fall through to a plain (idempotent) delete rather than guard.
+        assert!(!del_owned_by_other("", "sandbox-1"));
+        assert!(!del_owned_by_other("sandbox-1", ""));
+        assert!(!del_owned_by_other("", ""));
     }
 
     #[test]

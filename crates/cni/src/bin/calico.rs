@@ -284,17 +284,42 @@ fn cmd_del(netconf: &cni::NetConf) -> Result<(), String> {
 
     // Release the addresses and delete the WorkloadEndpoint CR (best-effort — DEL
     // must be idempotent; both no-op if cleanup already happened).
+    //
+    // The WEP delete is container-ID scoped: the WEP name and the veth name are
+    // deterministic from the pod identity, so a stale DEL fired by kubelet's
+    // dead-sandbox GC for a pod that has since been recreated under the same name
+    // must NOT clobber the live pod's WEP or its identically-named veth. When the
+    // stored `spec.containerID` belongs to a different (newer) sandbox we skip both
+    // the WEP delete and the veth teardown. The IPAM handle is already scoped by
+    // container id, so releasing the OLD handle is always correct.
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
-    rt.block_on(async {
-        if let Ok(backend) = connect_backend(netconf).await {
-            let ipam = KddIpam::new(backend.clone());
-            let _ = ipam.release_by_handle(&handle_id).await;
-            let _ = cni::wep::delete_wep(&backend, &ids.namespace, &wep_name).await;
+    let owned_by_other = rt.block_on(async {
+        let Ok(backend) = connect_backend(netconf).await else {
+            return false;
+        };
+        let ipam = KddIpam::new(backend.clone());
+        let _ = ipam.release_by_handle(&handle_id).await;
+        match cni::wep::delete_wep_if_owned(&backend, &ids.namespace, &wep_name, &container_id).await
+        {
+            Ok(cni::wep::DelOutcome::OwnedByOther) => {
+                eprintln!(
+                    "calico cni DEL: WEP {}/{wep_name} owned by a newer sandbox (container {container_id}); leaving it and its veth intact",
+                    ids.namespace
+                );
+                true
+            }
+            _ => false,
         }
     });
+
+    // A newer sandbox owns this workload's WEP + shared-name veth: a stale DEL must
+    // not tear down the live pod's networking.
+    if owned_by_other {
+        return Ok(());
+    }
 
     // Tear down the veth (idempotent).
     let host_veth = veth_name_for_workload(&ids.namespace, &ids.pod, "cali");
